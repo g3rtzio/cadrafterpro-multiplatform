@@ -151,7 +151,7 @@ import { DrawingStore, RibbonTab } from '../../services/drawing.store';
           <div class="ribbon-group-title">Takeoff</div>
         </div>
       } @else {
-        <!-- Estimating tab: new group, expand, collapse, export -->
+        <!-- Estimating tab: groups, export, parts, properties and columns -->
         <div class="ribbon-group">
           <div class="ribbon-buttons">
             <button
@@ -179,6 +179,68 @@ import { DrawingStore, RibbonTab } from '../../services/drawing.store';
             </button>
           </div>
           <div class="ribbon-group-title">Estimate</div>
+        </div>
+
+        <!-- Parts: estimate lines without a measurement; "As Sub-Item" hangs it under the selected row -->
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <div class="menu-anchor ribbon-split">
+              <button
+                class="ribbon-button"
+                title="New Part"
+                [disabled]="!s.hasDocument"
+                (click)="s.newPart(false)"
+              >
+                <span class="icon" [style.color]="colors.orange">add_box</span><span>New Part</span>
+              </button>
+              <button
+                class="ribbon-arrow"
+                [disabled]="!s.hasDocument"
+                (click)="toggleMenu('part', $event)"
+              >
+                <span class="icon small">expand_more</span>
+              </button>
+              @if (openMenu() === 'part') {
+                <div class="menu" (click)="$event.stopPropagation()">
+                  <button class="menu-item" (click)="openMenu.set(null); s.newPart(false)">
+                    New Part
+                  </button>
+                  <button
+                    class="menu-item"
+                    [disabled]="!s.canAddSubItem"
+                    (click)="openMenu.set(null); s.newPart(true)"
+                  >
+                    As Sub-Item
+                  </button>
+                </div>
+              }
+            </div>
+            <button
+              class="ribbon-button"
+              title="Properties of the selected row"
+              [disabled]="!s.canAddSubItem"
+              (click)="s.openProperties()"
+            >
+              <span class="icon">tune</span><span>Properties</span>
+            </button>
+            <button
+              class="ribbon-button"
+              title="Delete the selected part or group"
+              [disabled]="!s.selectedEstimateKey"
+              (click)="s.deleteEstimateSelection()"
+            >
+              <span class="icon" [style.color]="colors.red">delete</span><span>Delete</span>
+            </button>
+            <button
+              class="ribbon-button"
+              title="Columns of the estimate"
+              [disabled]="!s.hasDocument"
+              (click)="s.openColumns()"
+            >
+              <span class="icon">view_column</span><span>Columns</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Items</div>
         </div>
       }
     </div>
