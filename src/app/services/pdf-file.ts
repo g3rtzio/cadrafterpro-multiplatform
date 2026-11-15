@@ -24,6 +24,7 @@ export interface OpenedPdf {
   markups: Markup[];
   pageScales: Map<number, number>; // page index → scale denominator
   viewports: ScaleViewport[];
+  appData: string | null; // CadrafterPro estimate (properties, parts, columns, groups)
 }
 
 // One viewport to save: a region of the page with its own scale.
@@ -47,6 +48,7 @@ export interface SaveInput {
   removed: { pageIndex: number; ref: PDFRef }[];
   viewports: SaveViewport[][]; // one list per page (empty = no scale on that page)
   author: string;
+  appData: string; // stored in the document catalog (/CadrafterPro); Revu ignores it
 }
 
 // MARK: - Opening
@@ -89,7 +91,10 @@ export async function readPdf(bytes: Uint8Array): Promise<OpenedPdf> {
       }
     }
   });
-  return { lib, markups, pageScales, viewports };
+  const data = lib.catalog.lookup(PDFName.of('CadrafterPro'));
+  const appData =
+    data instanceof PDFString || data instanceof PDFHexString ? data.decodeText() : null;
+  return { lib, markups, pageScales, viewports, appData };
 }
 
 function readMarkup(dict: PDFDict, pageIndex: number): Markup | null {
@@ -247,6 +252,7 @@ export async function writePdf(lib: PDFDocument, input: SaveInput): Promise<Uint
     );
   });
 
+  lib.catalog.set(PDFName.of('CadrafterPro'), PDFHexString.fromText(input.appData));
   return lib.save({ useObjectStreams: false, updateFieldAppearances: false });
 }
 

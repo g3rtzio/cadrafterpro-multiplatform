@@ -1,6 +1,5 @@
 @import "tailwindcss";
 
-
 /* CadrafterPro web: global styles (every component uses these classes) */
 
 /* Icons: the Material Symbols font is loaded by App (app.ts) */
@@ -386,8 +385,8 @@ app-estimate-view.estimate {
 }
 .toast.error { color: #ff9500; }
 
-/* MARK: - Scale dialog */
-app-scale-dialog.dialog-backdrop {
+/* MARK: - Dialogs (Scale, Properties, Columns) */
+.dialog-backdrop {
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -412,3 +411,48 @@ app-scale-dialog.dialog-backdrop {
 .custom-row { display: flex; align-items: center; gap: 6px; }
 .num-input { width: 70px; }
 .dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* MARK: - Estimate groups (drag and drop) */
+.estimate-table tr.draggable { cursor: grab; }
+.estimate-table tr.drop-target { outline: 2px solid var(--accent); outline-offset: -2px; }
+.estimate-table .folder-actions { text-align: right; }
+.estimate-table .rename { padding: 1px 4px; }
+
+/* MARK: - Estimate rows (selection, parts) */
+app-estimate-view.estimate:focus { outline: none; }
+.estimate-table tbody tr { cursor: default; }
+.estimate-table tr.selected td { background: var(--accent-soft); }
+.estimate-table .part-row td { color: var(--text); }
+.estimate-table .name-cell { white-space: nowrap; }
+.estimate-table .chevron { display: inline-block; width: 18px; vertical-align: middle; cursor: pointer; }
+.estimate-table .icon-button.inline { margin-left: 6px; vertical-align: middle; }
+
+/* MARK: - Properties and Columns windows */
+.dialog.wide { width: 820px; max-height: calc(100vh - 48px); }
+.dialog .field-row { display: flex; gap: 10px; }
+.dialog .field-row .field { flex: 1; }
+.props-toolbar { display: flex; align-items: center; gap: 4px; }
+.props-toolbar .secondary { margin-left: auto; }
+.props-scroll { overflow: auto; max-height: 60vh; border: 1px solid var(--border); border-radius: 6px; }
+.props-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.props-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: 600;
+  padding: 4px 8px;
+  background: var(--bar);
+  border-bottom: 1px solid var(--border);
+}
+.props-table td { padding: 2px 8px; border-bottom: 1px solid var(--border); }
+.props-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.props-table .center { text-align: center; }
+.props-table .indent { padding-left: 26px; }
+.props-table tr.selected td { background: var(--accent-soft); }
+.props-table .props-group td { background: var(--bar); font-weight: 600; cursor: pointer; }
+.props-table input:not([type="checkbox"]), .props-table select { width: 100%; padding: 2px 4px; font: inherit; }
+.props-table input.num-input { width: 60px; }
+.props-table .result { color: var(--accent); }
+.props-table .result.error, .error-text { color: var(--danger); }
+.error-text { margin: 0; font-size: 12px; }

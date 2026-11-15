@@ -3,6 +3,8 @@ import { EstimateView } from './components/estimate-view/estimate-view';
 import { PlanView } from './components/plan-view/plan-view';
 import { PropertiesPanel } from './components/properties-panel/properties-panel';
 import { Ribbon } from './components/ribbon/ribbon';
+import { ColumnsDialog } from './components/columns-dialog/columns-dialog';
+import { PropertiesDialog } from './components/properties-dialog/properties-dialog';
 import { ScaleDialog } from './components/scale-dialog/scale-dialog';
 import { StatusBar } from './components/status-bar/status-bar';
 import { TakeoffTree } from './components/takeoff-tree/takeoff-tree';
@@ -15,8 +17,10 @@ import { DrawingStore } from './services/drawing.store';
 @Component({
   selector: 'app-root',
   imports: [
+    ColumnsDialog,
     EstimateView,
     PlanView,
+    PropertiesDialog,
     PropertiesPanel,
     Ribbon,
     ScaleDialog,
@@ -141,6 +145,14 @@ import { DrawingStore } from './services/drawing.store';
     <!-- Scale dialog (page scale, viewport, or asked before measuring); a new one for every request -->
     @for (request of s.scaleRequest ? [s.scaleRequest] : []; track request.id) {
       <app-scale-dialog />
+    }
+
+    <!-- Estimate: Properties of a row (a new window for every row) and the Columns window -->
+    @for (key of s.propertiesKey ? [s.propertiesKey] : []; track key) {
+      <app-properties-dialog [rowKey]="key" />
+    }
+    @if (s.columnsOpen) {
+      <app-columns-dialog />
     }
   `,
 })
