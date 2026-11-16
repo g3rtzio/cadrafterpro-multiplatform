@@ -1,7 +1,9 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { EstimateView } from './components/estimate-view/estimate-view';
+import { LayoutsPanel } from './components/layouts-panel/layouts-panel';
+import { TemplatesView } from './components/templates-view/templates-view';
 import { PlanView } from './components/plan-view/plan-view';
-import { PropertiesPanel } from './components/properties-panel/properties-panel';
+import { SidePanel } from './components/side-panel/side-panel';
 import { Ribbon } from './components/ribbon/ribbon';
 import { ColumnsDialog } from './components/columns-dialog/columns-dialog';
 import { PropertiesDialog } from './components/properties-dialog/properties-dialog';
@@ -10,24 +12,15 @@ import { StatusBar } from './components/status-bar/status-bar';
 import { TakeoffTree } from './components/takeoff-tree/takeoff-tree';
 import { Thumbnails } from './components/thumbnails/thumbnails';
 import { DrawingStore } from './services/drawing.store';
+import { OcrPanel } from './components/ocr-panel/ocr-panel';
+import { OcrService } from './services/ocr';
 
 // Main window — port of ContentView.swift:
 // left the element tree or the page thumbnails, ribbon on top, the plan (one or two panes)
 // in the middle, the status bar at the bottom and the properties panel on the right
 @Component({
   selector: 'app-root',
-  imports: [
-    ColumnsDialog,
-    EstimateView,
-    PlanView,
-    PropertiesDialog,
-    PropertiesPanel,
-    Ribbon,
-    ScaleDialog,
-    StatusBar,
-    TakeoffTree,
-    Thumbnails,
-  ],
+  imports: [OcrPanel, ColumnsDialog, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'app',
@@ -41,94 +34,55 @@ import { DrawingStore } from './services/drawing.store';
     @if (showSidebar()) {
       <aside class="sidebar">
         <div class="segmented sidebar-picker">
-          <button
-            [class.active]="sidebarMode() === 'elements'"
-            (click)="sidebarMode.set('elements')"
-          >
-            Elements
-          </button>
-          <button [class.active]="sidebarMode() === 'pages'" (click)="sidebarMode.set('pages')">
-            Pages
-          </button>
+          <button [class.active]="sidebarMode() === 'elements'" (click)="sidebarMode.set('elements')">Elements</button>
+          <button [class.active]="sidebarMode() === 'pages'" (click)="sidebarMode.set('pages')">Pages</button>
         </div>
-        @if (sidebarMode() === 'elements') {
-          <app-takeoff-tree />
-        } @else {
-          <app-thumbnails />
-        }
+        @if (sidebarMode() === 'elements') { <app-takeoff-tree /> } @else { <app-thumbnails /> }
       </aside>
     }
 
     <main class="main">
       <!-- Title bar: file name, pages, zoom and panels -->
       <header class="titlebar">
-        <button class="icon-button" title="Sidebar" (click)="showSidebar.set(!showSidebar())">
-          <span class="icon">left_panel_open</span>
-        </button>
+        <button class="icon-button" title="Sidebar" (click)="showSidebar.set(!showSidebar())"><span class="icon">left_panel_open</span></button>
         <span class="title">{{ s.fileName || 'CadrafterPro' }}</span>
         <span class="spacer"></span>
-        <button class="icon-button" title="Previous Page" (click)="s.previousPage()">
-          <span class="icon">chevron_left</span>
-        </button>
-        <button class="icon-button" title="Next Page" (click)="s.nextPage()">
-          <span class="icon">chevron_right</span>
-        </button>
-        <button class="icon-button" title="Zoom Out" (click)="s.zoomOut()">
-          <span class="icon">zoom_out</span>
-        </button>
-        <button class="icon-button" title="Fit" (click)="s.fitPage()">
-          <span class="icon">fit_screen</span>
-        </button>
-        <button class="icon-button" title="Zoom In" (click)="s.zoomIn()">
-          <span class="icon">zoom_in</span>
-        </button>
-        <button
-          class="icon-button"
-          title="Properties"
-          (click)="showInspector.set(!showInspector())"
-        >
-          <span class="icon">right_panel_open</span>
-        </button>
+        <button class="icon-button" title="Previous Page" (click)="s.previousPage()"><span class="icon">chevron_left</span></button>
+        <button class="icon-button" title="Next Page" (click)="s.nextPage()"><span class="icon">chevron_right</span></button>
+        <button class="icon-button" title="Zoom Out" (click)="s.zoomOut()"><span class="icon">zoom_out</span></button>
+        <button class="icon-button" title="Fit" (click)="s.fitPage()"><span class="icon">fit_screen</span></button>
+        <button class="icon-button" title="Zoom In" (click)="s.zoomIn()"><span class="icon">zoom_in</span></button>
+        <button class="icon-button" title="Properties" (click)="showInspector.set(!showInspector())"><span class="icon">right_panel_open</span></button>
       </header>
 
-      <!-- Top: toolbar with tabs (Home / Estimating) -->
+      <!-- Top: toolbar with tabs (Home / Estimating / Templates) -->
       <app-ribbon (openFile)="openFile()" />
 
-      <!-- Center: the plan (one or two panes), or the estimate table on top of it -->
+      <!-- Center: the plan (one or two panes), or on top of it the estimate (with its layouts) or the templates -->
       <div class="center">
-        <div
-          class="plan-area"
-          [class.vertical]="s.splitMode === 'vertical'"
-          [class.horizontal]="s.splitMode === 'horizontal'"
-        >
+        <div class="plan-area" [class.vertical]="s.splitMode === 'vertical'" [class.horizontal]="s.splitMode === 'horizontal'">
           @for (pane of panes(); track pane) {
-            <div
-              class="pane"
-              [class.active-pane]="s.splitMode !== 'single' && s.activePane === pane"
-            >
+            <div class="pane" [class.active-pane]="s.splitMode !== 'single' && s.activePane === pane">
               @if (s.splitMode !== 'single') {
                 <div class="pane-bar" (mousedown)="s.activate(pane)">
                   <span class="secondary small">{{ s.pageName(s.pageIndexes[pane]) }}</span>
                   <span class="spacer"></span>
-                  <button class="icon-button" title="Close This View" (click)="s.closePane(pane)">
-                    <span class="icon small">close</span>
-                  </button>
+                  <button class="icon-button" title="Close This View" (click)="s.closePane(pane)"><span class="icon small">close</span></button>
                 </div>
               }
               <app-plan-view [pane]="pane" />
             </div>
           }
         </div>
-        @if (s.ribbonTab === 'Estimating') {
-          <app-estimate-view />
-        }
+        @if (s.ribbonTab === 'Estimating') { <app-layouts-panel /><app-estimate-view /> }
+        @if (s.ribbonTab === 'Templates') { <app-templates-view /> }
+        <!-- OCR panel (text recognition) over the plan -->
+        @if (ocr.panelOpen()) { <app-ocr-panel /> }
 
         <!-- Short message after saving or exporting -->
         @if (s.toastMessage) {
           <div class="toast" [class.error]="s.toastIsError">
-            <span class="icon small">{{ s.toastIsError ? 'warning' : 'check_circle' }}</span>{{
-              s.toastMessage
-            }}
+            <span class="icon small">{{ s.toastIsError ? 'warning' : 'check_circle' }}</span>{{ s.toastMessage }}
           </div>
         }
       </div>
@@ -137,10 +91,8 @@ import { DrawingStore } from './services/drawing.store';
       <app-status-bar />
     </main>
 
-    <!-- Right: properties panel -->
-    @if (showInspector()) {
-      <aside class="inspector"><app-properties-panel /></aside>
-    }
+    <!-- Right: Revu-style side bar (Settings, Search, Scale) -->
+    <app-side-panel [(open)]="showInspector" />
 
     <!-- Scale dialog (page scale, viewport, or asked before measuring); a new one for every request -->
     @for (request of s.scaleRequest ? [s.scaleRequest] : []; track request.id) {
@@ -158,6 +110,7 @@ import { DrawingStore } from './services/drawing.store';
 })
 export class App {
   readonly store = inject(DrawingStore);
+  readonly ocr = inject(OcrService);
   readonly showSidebar = signal(true);
   readonly showInspector = signal(true);
   readonly sidebarMode = signal<'elements' | 'pages'>('elements');
@@ -173,17 +126,14 @@ export class App {
   // Open File: with the File System Access API (Chrome, Edge) Save can write over the same file;
   // other browsers use a normal file picker and Save downloads a copy
   async openFile(): Promise<void> {
-    const picker = (
-      window as unknown as { showOpenFilePicker?: (o: object) => Promise<FileSystemFileHandle[]> }
-    ).showOpenFilePicker;
+    const picker = (window as unknown as { showOpenFilePicker?: (o: object) => Promise<FileSystemFileHandle[]> })
+      .showOpenFilePicker;
     if (!picker) {
       this.pickWithInput();
       return;
     }
     try {
-      const [handle] = await picker({
-        types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
-      });
+      const [handle] = await picker({ types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }] });
       const file = await handle.getFile();
       await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name, handle);
     } catch {
@@ -207,21 +157,15 @@ export class App {
   // the dropped items stop working as soon as the event ends.
   async onDrop(event: DragEvent): Promise<void> {
     event.preventDefault();
-    const item = [...(event.dataTransfer?.items ?? [])].find((i) => i.kind === 'file');
+    const item = [...(event.dataTransfer?.items ?? [])].find(i => i.kind === 'file');
     if (!item) return;
     const file = item.getAsFile();
-    const withHandle = item as DataTransferItem & {
-      getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>;
-    };
-    const pendingHandle =
-      withHandle.getAsFileSystemHandle?.().catch(() => null) ?? Promise.resolve(null);
+    const withHandle = item as DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> };
+    const pendingHandle = withHandle.getAsFileSystemHandle?.().catch(() => null) ?? Promise.resolve(null);
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) return;
     const handle = await pendingHandle;
-    await this.store.open(
-      new Uint8Array(await file.arrayBuffer()),
-      file.name,
-      handle && handle.kind === 'file' ? (handle as FileSystemFileHandle) : null,
-    );
+    await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name,
+      handle && handle.kind === 'file' ? handle as FileSystemFileHandle : null);
   }
 
   // ⌘O opens a drawing, ⌘S saves, ⇧⌘S saves a copy, ⌘Z undoes, ⇧⌘Z / Ctrl+Y redoes
@@ -230,15 +174,11 @@ export class App {
     const key = e.key.toLowerCase();
     // While typing in a text field, Undo belongs to the field
     const target = e.target as HTMLElement | null;
-    const textInput =
-      target instanceof HTMLInputElement &&
-      /^(text|search|number|email|url|tel|password)$/.test(target.type);
-    const typing =
-      textInput || target instanceof HTMLTextAreaElement || !!target?.isContentEditable;
+    const textInput = target instanceof HTMLInputElement && /^(text|search|number|email|url|tel|password)$/.test(target.type);
+    const typing = textInput || target instanceof HTMLTextAreaElement || !!target?.isContentEditable;
     if ((key === 'z' || key === 'y') && !typing) {
       e.preventDefault();
-      if (key === 'y' || e.shiftKey) this.store.redo();
-      else this.store.undo();
+      if (key === 'y' || e.shiftKey) this.store.redo(); else this.store.undo();
       return;
     }
     if (key === 'o') {
@@ -246,8 +186,7 @@ export class App {
       this.openFile();
     } else if (key === 's') {
       e.preventDefault();
-      if (e.shiftKey) this.store.saveAs();
-      else this.store.save();
+      if (e.shiftKey) this.store.saveAs(); else this.store.save();
     }
   }
 }
@@ -259,7 +198,6 @@ function loadIconFont(): void {
   const sheet = document.createElement('link');
   sheet.id = id;
   sheet.rel = 'stylesheet';
-  sheet.href =
-    'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0';
+  sheet.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0';
   document.head.appendChild(sheet);
 }

@@ -10,11 +10,11 @@ export interface PropertyDef {
   name: string;
   group: string;
   type: PropType;
-  formula: string; // "12.5", "[Qty] * [Cost Each]", "[..]", "Part"
-  inputUnits: string; // "$", "%", "EA"… (shown next to the formula)
-  units: string; // output units (shown next to the result)
+  formula: string;              // "12.5", "[Qty] * [Cost Each]", "[..]", "Part"
+  inputUnits: string;           // "$", "%", "EA"… (shown next to the formula)
+  units: string;                // output units (shown next to the result)
   decimals: number;
-  takeoff?: boolean; // calculated from the plan, the formula can't be edited
+  takeoff?: boolean;            // calculated from the plan, the formula can't be edited
 }
 
 // Part: an estimate line without a measurement. It hangs from an element or another part
@@ -31,38 +31,29 @@ export interface ColumnDef {
   name: string;
   type: PropType;
   visible: boolean;
-  showUnits: boolean; // adds a "Units" column right after this one
+  showUnits: boolean;           // adds a "Units" column right after this one
   decimals: number;
+  width?: number;               // pixels (dragging the edge of the header); empty = automatic
 }
 
 // Group of rows made by the user in the estimate (rows are matched by name)
-export interface EstimateGroup {
-  id: string;
-  name: string;
-  rowNames: string[];
-}
+export interface EstimateGroup { id: string; name: string; rowNames: string[]; }
 
 // Everything saved with the drawing (inside the PDF, see pdf-file.ts)
 export interface EstimateData {
   version: 1;
   groups: EstimateGroup[];
-  elementProps: Record<string, PropertyDef[]>; // element name → its properties (once edited)
+  elementProps: Record<string, PropertyDef[]>;   // element name → its properties (once edited)
   parts: Part[];
   columns: ColumnDef[];
 }
 
 export const PROPERTY_GROUPS = ['Item', 'Estimating', 'Takeoff Data', 'Work Breakdown Structure'];
-export const TAKEOFF_PROPS = [
-  'Area',
-  'Linear Total',
-  'Segment Count',
-  'Point Count',
-  'Section Count',
-];
+export const TAKEOFF_PROPS = ['Area', 'Linear Total', 'Segment Count', 'Point Count', 'Section Count'];
 
 // Measured values of an element (from the plan)
 export interface TakeoffValues {
-  Area: number;
+  'Area': number;
   'Linear Total': number;
   'Segment Count': number;
   'Point Count': number;
@@ -71,12 +62,7 @@ export interface TakeoffValues {
 
 export type ElementKind = 'area' | 'length' | 'count';
 
-function prop(
-  name: string,
-  group: string,
-  formula = '',
-  extra: Partial<PropertyDef> = {},
-): PropertyDef {
+function prop(name: string, group: string, formula = '', extra: Partial<PropertyDef> = {}): PropertyDef {
   return { name, group, type: 'number', formula, inputUnits: '', units: '', decimals: 2, ...extra };
 }
 
@@ -106,18 +92,11 @@ function wbsProps(): PropertyDef[] {
 
 // Properties of a measured element (Area, Linear or Count)
 export function elementTemplate(kind: ElementKind, name: string): PropertyDef[] {
-  const qty = {
-    area: ['[Area]', 'SF'],
-    length: ['[Linear Total]', 'LF'],
-    count: ['[Point Count]', 'EA'],
-  }[kind];
+  const qty = { area: ['[Area]', 'SF'], length: ['[Linear Total]', 'LF'], count: ['[Point Count]', 'EA'] }[kind];
   const typeName = { area: 'Area', length: 'Linear', count: 'Count' }[kind];
   const t = 'Takeoff Data';
   return [
-    text('Name', 'Item', name),
-    text('Type', 'Item', typeName),
-    text('Description', 'Item'),
-    text('Item #', 'Item'),
+    text('Name', 'Item', name), text('Type', 'Item', typeName), text('Description', 'Item'), text('Item #', 'Item'),
     ...estimatingProps(qty[0], qty[1]),
     prop('Area', t, '', { units: 'SF', takeoff: true }),
     prop('Linear Total', t, '', { units: 'LF', takeoff: true }),
@@ -132,28 +111,18 @@ export function elementTemplate(kind: ElementKind, name: string): PropertyDef[] 
 export function partTemplate(name = 'New Part'): PropertyDef[] {
   const t = 'Takeoff Data';
   return [
-    text('Name', 'Item', name),
-    text('Type', 'Item', 'Part'),
-    text('Description', 'Item'),
-    text('Item #', 'Item'),
+    text('Name', 'Item', name), text('Type', 'Item', 'Part'), text('Description', 'Item'), text('Item #', 'Item'),
     ...estimatingProps('[..]', ''),
-    prop('Area', t, '[..]'),
-    prop('Linear Total', t, '[..]'),
-    prop('Segment Count', t, '[..]'),
-    prop('Point Count', t, '[..]'),
+    prop('Area', t, '[..]'), prop('Linear Total', t, '[..]'),
+    prop('Segment Count', t, '[..]'), prop('Point Count', t, '[..]'),
     prop('Section Count', t, '[..]', { inputUnits: 'EA', units: 'EA' }),
     ...wbsProps(),
   ];
 }
 
 export function defaultColumns(): ColumnDef[] {
-  const col = (
-    name: string,
-    type: PropType,
-    visible: boolean,
-    showUnits = false,
-    decimals = 2,
-  ): ColumnDef => ({ id: `col-${name}`, name, type, visible, showUnits, decimals });
+  const col = (name: string, type: PropType, visible: boolean, showUnits = false, decimals = 2): ColumnDef =>
+    ({ id: `col-${name}`, name, type, visible, showUnits, decimals });
   return [
     col('Name', 'text', true),
     col('Description', 'text', false),
@@ -176,26 +145,24 @@ export function emptyEstimate(): EstimateData {
 // What a property is calculated from
 export interface EvalNode {
   props: PropertyDef[];
-  takeoff: TakeoffValues | null; // elements: values measured on the plan
-  parent: EvalNode | null; // parts: the element (or part) they hang from
+  takeoff: TakeoffValues | null;   // elements: values measured on the plan
+  parent: EvalNode | null;         // parts: the element (or part) they hang from
 }
 
 export interface EvalResult {
-  value: number | string; // number, or text for text properties and plain text formulas
+  value: number | string;          // number, or text for text properties and plain text formulas
   units: string;
   error?: string;
 }
 
 export function findProp(props: PropertyDef[], name: string): PropertyDef | undefined {
   const key = name.trim().toLowerCase();
-  return props.find((p) => p.name.trim().toLowerCase() === key);
+  return props.find(p => p.name.trim().toLowerCase() === key);
 }
 
 export function evaluate(node: EvalNode, name: string, seen: Set<string> = new Set()): EvalResult {
   const def = findProp(node.props, name);
-  const takeoffName = TAKEOFF_PROPS.find(
-    (t) => t.toLowerCase() === name.trim().toLowerCase(),
-  ) as keyof TakeoffValues;
+  const takeoffName = TAKEOFF_PROPS.find(t => t.toLowerCase() === name.trim().toLowerCase()) as keyof TakeoffValues;
   // Measured values of an element
   if (node.takeoff && takeoffName && (!def || def.takeoff)) {
     return { value: node.takeoff[takeoffName], units: def?.units ?? '' };
@@ -220,9 +187,9 @@ export function evaluate(node: EvalNode, name: string, seen: Set<string> = new S
     if (def.type === 'text') return { value: formula, units: def.units };
 
     const tokens = tokenize(formula);
-    if (!tokens) return { value: formula, units: def.units }; // plain text
+    if (!tokens) return { value: formula, units: def.units };          // plain text
     let error: string | undefined;
-    const parser = new Parser(tokens, (ref) => {
+    const parser = new Parser(tokens, ref => {
       const r = reference(node, def, ref, seen);
       if (r.error && !error) error = r.error;
       return typeof r.value === 'number' ? r.value : Number(r.value) || 0;
@@ -230,11 +197,7 @@ export function evaluate(node: EvalNode, name: string, seen: Set<string> = new S
     const value = parser.parse();
     return { value: isFinite(value) ? value : 0, units: def.units, error };
   } catch (e) {
-    return {
-      value: 0,
-      units: def.units,
-      error: e instanceof Error ? e.message : 'Invalid formula',
-    };
+    return { value: 0, units: def.units, error: e instanceof Error ? e.message : 'Invalid formula' };
   } finally {
     seen.delete(guard);
   }
@@ -253,15 +216,11 @@ const nodeIds = new WeakMap<EvalNode, number>();
 let nextNodeId = 1;
 function nodeId(node: EvalNode): number {
   let id = nodeIds.get(node);
-  if (!id) {
-    id = nextNodeId++;
-    nodeIds.set(node, id);
-  }
+  if (!id) { id = nextNodeId++; nodeIds.set(node, id); }
   return id;
 }
 
-type Token =
-  { type: 'num'; value: number } | { type: 'ref'; name: string } | { type: 'op'; op: string };
+type Token = { type: 'num'; value: number } | { type: 'ref'; name: string } | { type: 'op'; op: string };
 
 // null = not a formula (plain text such as "Part")
 function tokenize(text: string): Token[] | null {
@@ -269,10 +228,7 @@ function tokenize(text: string): Token[] | null {
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
-    if (/\s/.test(ch)) {
-      i++;
-      continue;
-    }
+    if (/\s/.test(ch)) { i++; continue; }
     if (ch === '[') {
       const end = text.indexOf(']', i);
       if (end < 0) return null;
@@ -287,7 +243,7 @@ function tokenize(text: string): Token[] | null {
       tokens.push({ type: 'op', op: ch });
       i++;
     } else if (ch === ',') {
-      i++; // thousands separator in "1,250"
+      i++;                                   // thousands separator in "1,250"
     } else {
       return null;
     }
@@ -298,10 +254,7 @@ function tokenize(text: string): Token[] | null {
 // Arithmetic with the usual precedence
 class Parser {
   private i = 0;
-  constructor(
-    private readonly tokens: Token[],
-    private readonly lookup: (name: string) => number,
-  ) {}
+  constructor(private readonly tokens: Token[], private readonly lookup: (name: string) => number) {}
 
   parse(): number {
     const value = this.sum();
@@ -351,16 +304,11 @@ class Parser {
     throw new Error('Invalid formula');
   }
 
-  private peek(): Token | undefined {
-    return this.tokens[this.i];
-  }
+  private peek(): Token | undefined { return this.tokens[this.i]; }
 }
 
 // "1,234.50" with the property's decimals
 export function formatResult(result: EvalResult, decimals: number): string {
   if (typeof result.value === 'string') return result.value;
-  return result.value.toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
+  return result.value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }

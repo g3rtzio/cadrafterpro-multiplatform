@@ -8,7 +8,7 @@ interface Line {
   depth: number;
   open: boolean;
   canOpen: boolean;
-  draggable: boolean; // top-level rows can be moved into and out of groups
+  draggable: boolean;              // top-level rows can be moved into and out of groups
 }
 
 // "Estimating" tab: every element in the document with its properties (PlanSwift style)
@@ -40,100 +40,73 @@ interface Line {
         <div class="secondary">Measure on the plan or open a PDF with markups.</div>
       </div>
     } @else {
-      <table class="estimate-table">
+      <table class="estimate-table resizable">
         <thead>
           <tr>
             @for (col of columns(); track col.id) {
-              <th [class.num]="col.type === 'number' && col.name !== 'Name'">{{ col.name }}</th>
-              @if (col.showUnits) {
-                <th>Units</th>
-              }
+              <!-- Drag the right edge of a header to change the width of the column -->
+              <th [class.num]="col.type === 'number' && col.name !== 'Name'" [style.width.px]="col.width ?? defaultWidth(col)">
+                {{ col.name }}
+                <span class="col-resize" title="Drag to change the width" (mousedown)="startResize(col, $event)"
+                      (click)="$event.stopPropagation()"></span>
+              </th>
+              @if (col.showUnits) { <th class="units-col">Units</th> }
             }
           </tr>
         </thead>
         <tbody>
           @for (line of lines(); track line.row.id) {
             @let row = line.row;
-            <tr
-              [class.folder-row]="row.isFolder"
-              [class.part-row]="row.kind === 'part'"
-              [class.selected]="s.selectedEstimateKey === row.key"
-              [class.draggable]="line.draggable"
-              [attr.draggable]="line.draggable ? 'true' : null"
-              [class.drop-target]="dropTarget() === row.id"
-              (click)="select(row, $event)"
-              (dblclick)="open(row)"
-              (dragstart)="dragStart(row, $event)"
-              (dragover)="row.isFolder && allowDrop($event, row.id)"
-              (dragleave)="dropTarget.set(null)"
-              (drop)="row.isFolder && dropOn(row.id, $event)"
-            >
+            <tr [class.folder-row]="row.isFolder" [class.part-row]="row.kind === 'part'"
+                [class.selected]="s.selectedEstimateKey === row.key"
+                [class.draggable]="line.draggable" [attr.draggable]="line.draggable ? 'true' : null"
+                [class.drop-target]="dropTarget() === row.id"
+                (click)="select(row, $event)" (dblclick)="open(row)"
+                (dragstart)="dragStart(row, $event)"
+                (dragover)="row.isFolder && allowDrop($event, row.id)" (dragleave)="dropTarget.set(null)"
+                (drop)="row.isFolder && dropOn(row.id, $event)">
               @for (col of columns(); track col.id) {
                 @if (col.name === 'Name') {
                   <td class="name-cell" [style.padding-left.px]="12 + line.depth * 20">
                     <span class="chevron" (click)="toggle(row, $event)">
-                      @if (line.canOpen) {
-                        <span class="icon small">{{
-                          line.open ? 'expand_more' : 'chevron_right'
-                        }}</span>
-                      }
+                      @if (line.canOpen) { <span class="icon small">{{ line.open ? 'expand_more' : 'chevron_right' }}</span> }
                     </span>
                     @if (row.isFolder) {
                       <span class="icon small secondary">folder</span>
                       @if (editing() === row.id) {
-                        <input
-                          class="rename"
-                          [value]="row.name"
-                          (click)="$event.stopPropagation()"
-                          (dblclick)="$event.stopPropagation()"
-                          (keydown.enter)="rename(row, $event)"
-                          (keydown.escape)="editing.set(null)"
-                          (keydown.delete)="$event.stopPropagation()"
-                          (keydown.backspace)="$event.stopPropagation()"
-                          (blur)="rename(row, $event)"
-                        />
+                        <input class="rename" [value]="row.name" (click)="$event.stopPropagation()" (dblclick)="$event.stopPropagation()"
+                               (keydown.enter)="rename(row, $event)" (keydown.escape)="editing.set(null)"
+                               (keydown.delete)="$event.stopPropagation()" (keydown.backspace)="$event.stopPropagation()"
+                               (blur)="rename(row, $event)" />
                       } @else {
                         <b title="Double-click to rename">{{ row.name }}</b>
                         <span class="secondary small"> ({{ row.children.length }})</span>
-                        <button
-                          class="icon-button inline"
-                          title="Delete Group (its rows stay)"
-                          (click)="s.deleteEstimateGroup(row.id); $event.stopPropagation()"
-                        >
+                        <button class="icon-button inline" title="Delete Group (its rows stay)"
+                                (click)="s.deleteEstimateGroup(row.id); $event.stopPropagation()">
                           <span class="icon small">delete</span>
                         </button>
                       }
                     } @else if (row.kind === 'part') {
-                      <span class="icon small secondary">subdirectory_arrow_right</span
-                      >{{ row.name }}
+                      <span class="icon small part-icon" title="Part">deployed_code</span>{{ row.name }}
                     } @else {
                       <span class="swatch" [style.background]="row.color"></span>{{ row.name }}
                     }
                   </td>
                 } @else {
                   @let cell = s.cellValue(row, col);
-                  <td
-                    [class.num]="col.type === 'number'"
-                    [class.qty]="col.name === 'Qty'"
-                    [class.secondary]="col.name === 'Pages'"
-                  >
+                  <td [class.num]="col.type === 'number'" [class.qty]="col.name === 'Qty'"
+                      [class.secondary]="col.name === 'Pages'">
                     @if (col.name === 'Color' && !row.isFolder) {
                       <span class="swatch" [style.background]="row.color"></span>
                     }
                     {{ cell.text }}
                   </td>
                 }
-                @if (col.showUnits) {
-                  <td>{{ units(row, col) }}</td>
-                }
+                @if (col.showUnits) { <td>{{ units(row, col) }}</td> }
               }
             </tr>
             @if (row.isFolder && line.open && row.children.length === 0) {
-              <tr>
-                <td class="secondary small" [style.padding-left.px]="52" [attr.colspan]="span()">
-                  Drag elements here
-                </td>
-              </tr>
+              <tr><td class="secondary small" [style.padding-left.px]="52" [attr.colspan]="span()">Drag elements here</td></tr>
             }
           }
         </tbody>
@@ -143,8 +116,8 @@ interface Line {
 })
 export class EstimateView {
   readonly store = inject(DrawingStore);
-  readonly editing = signal<string | null>(null); // group being renamed
-  readonly dropTarget = signal<string | null>(null); // group under the dragged row
+  readonly editing = signal<string | null>(null);      // group being renamed
+  readonly dropTarget = signal<string | null>(null);   // group under the dragged row
 
   // Reading the store here refreshes the table when something changes on the plan
   readonly columns = computed(() => this.store.watch().visibleColumns);
@@ -165,6 +138,31 @@ export class EstimateView {
     return out;
   });
 
+  // Width of a column that was never resized: Name is wider, numbers narrower
+  defaultWidth(col: ColumnDef): number {
+    if (col.name === 'Name') return 260;
+    if (col.name === 'Description') return 200;
+    return col.type === 'number' ? 110 : 120;
+  }
+
+  // Drag the edge of a header: the width follows the mouse, released = saved
+  startResize(col: ColumnDef, event: MouseEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = (event.target as HTMLElement).parentElement?.getBoundingClientRect().width ?? this.defaultWidth(col);
+    const move = (e: MouseEvent) => this.store.setColumnWidth(col.id, startWidth + e.clientX - startX, false);
+    const up = (e: MouseEvent) => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      document.body.classList.remove('resizing-column');
+      this.store.setColumnWidth(col.id, startWidth + e.clientX - startX, true);
+    };
+    document.body.classList.add('resizing-column');
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }
+
   // Units of a "Units" column: from the property (groups add up only rows with the same units)
   units(row: EstimateRow, col: ColumnDef): string {
     return this.store.cellValue(row, col).units;
@@ -178,16 +176,14 @@ export class EstimateView {
 
   // Double-click: Properties of an element or part; a group is renamed
   open(row: EstimateRow): void {
-    if (row.isFolder) this.editing.set(row.id);
-    else this.store.openProperties(row.key);
+    if (row.isFolder) this.editing.set(row.id); else this.store.openProperties(row.key);
   }
 
   // Rows and groups start open; Collapse All / Expand All change this set
   toggle(row: EstimateRow, event: MouseEvent): void {
     event.stopPropagation();
     const set = this.store.estimateCollapsed;
-    if (set.has(row.id)) set.delete(row.id);
-    else set.add(row.id);
+    if (set.has(row.id)) set.delete(row.id); else set.add(row.id);
     this.store.touch();
   }
 
