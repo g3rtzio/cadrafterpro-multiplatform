@@ -11,16 +11,17 @@ import { ScaleDialog } from './components/scale-dialog/scale-dialog';
 import { StatusBar } from './components/status-bar/status-bar';
 import { TakeoffTree } from './components/takeoff-tree/takeoff-tree';
 import { Thumbnails } from './components/thumbnails/thumbnails';
-import { DrawingStore } from './services/drawing.store';
+import { DrawingStore } from './services/drawing.store/drawing.store';
 import { OcrPanel } from './components/ocr-panel/ocr-panel';
-import { OcrService } from './services/ocr';
+import { OcrService } from './services/ocr/ocr';
+import { Icon } from './components/icon/icon';
 
 // Main window — port of ContentView.swift:
 // left the element tree or the page thumbnails, ribbon on top, the plan (one or two panes)
 // in the middle, the status bar at the bottom and the properties panel on the right
 @Component({
   selector: 'app-root',
-  imports: [OcrPanel, ColumnsDialog, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
+  imports: [Icon, OcrPanel, ColumnsDialog, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'app',
@@ -30,8 +31,10 @@ import { OcrService } from './services/ocr';
   },
   template: `
     @let s = store.watch();
-    <!-- Left: page thumbnails or the element tree -->
-    @if (showSidebar()) {
+    <!-- Left: page thumbnails or the element tree; in the Estimating tab, the Estimating Layouts panel -->
+    @if (showSidebar() && s.ribbonTab === 'Estimating') {
+      <aside class="sidebar layouts-sidebar"><app-layouts-panel /></aside>
+    } @else if (showSidebar()) {
       <aside class="sidebar">
         <div class="segmented sidebar-picker">
           <button [class.active]="sidebarMode() === 'elements'" (click)="sidebarMode.set('elements')">Elements</button>
@@ -44,21 +47,21 @@ import { OcrService } from './services/ocr';
     <main class="main">
       <!-- Title bar: file name, pages, zoom and panels -->
       <header class="titlebar">
-        <button class="icon-button" title="Sidebar" (click)="showSidebar.set(!showSidebar())"><span class="icon">left_panel_open</span></button>
+        <button class="icon-button" title="Sidebar" (click)="showSidebar.set(!showSidebar())"><app-icon class="icon" name="left_panel_open" /></button>
         <span class="title">{{ s.fileName || 'CadrafterPro' }}</span>
         <span class="spacer"></span>
-        <button class="icon-button" title="Previous Page" (click)="s.previousPage()"><span class="icon">chevron_left</span></button>
-        <button class="icon-button" title="Next Page" (click)="s.nextPage()"><span class="icon">chevron_right</span></button>
-        <button class="icon-button" title="Zoom Out" (click)="s.zoomOut()"><span class="icon">zoom_out</span></button>
-        <button class="icon-button" title="Fit" (click)="s.fitPage()"><span class="icon">fit_screen</span></button>
-        <button class="icon-button" title="Zoom In" (click)="s.zoomIn()"><span class="icon">zoom_in</span></button>
-        <button class="icon-button" title="Properties" (click)="showInspector.set(!showInspector())"><span class="icon">right_panel_open</span></button>
+        <button class="icon-button" title="Previous Page" (click)="s.previousPage()"><app-icon class="icon" name="chevron_left" /></button>
+        <button class="icon-button" title="Next Page" (click)="s.nextPage()"><app-icon class="icon" name="chevron_right" /></button>
+        <button class="icon-button" title="Zoom Out" (click)="s.zoomOut()"><app-icon class="icon" name="zoom_out" /></button>
+        <button class="icon-button" title="Fit" (click)="s.fitPage()"><app-icon class="icon" name="fit_screen" /></button>
+        <button class="icon-button" title="Zoom In" (click)="s.zoomIn()"><app-icon class="icon" name="zoom_in" /></button>
+        <button class="icon-button" title="Properties" (click)="showInspector.set(!showInspector())"><app-icon class="icon" name="right_panel_open" /></button>
       </header>
 
       <!-- Top: toolbar with tabs (Home / Estimating / Templates) -->
       <app-ribbon (openFile)="openFile()" />
 
-      <!-- Center: the plan (one or two panes), or on top of it the estimate (with its layouts) or the templates -->
+      <!-- Center: the plan (one or two panes), or on top of it the estimate or the templates -->
       <div class="center">
         <div class="plan-area" [class.vertical]="s.splitMode === 'vertical'" [class.horizontal]="s.splitMode === 'horizontal'">
           @for (pane of panes(); track pane) {
@@ -67,14 +70,14 @@ import { OcrService } from './services/ocr';
                 <div class="pane-bar" (mousedown)="s.activate(pane)">
                   <span class="secondary small">{{ s.pageName(s.pageIndexes[pane]) }}</span>
                   <span class="spacer"></span>
-                  <button class="icon-button" title="Close This View" (click)="s.closePane(pane)"><span class="icon small">close</span></button>
+                  <button class="icon-button" title="Close This View" (click)="s.closePane(pane)"><app-icon class="icon small" name="close" /></button>
                 </div>
               }
               <app-plan-view [pane]="pane" />
             </div>
           }
         </div>
-        @if (s.ribbonTab === 'Estimating') { <app-layouts-panel /><app-estimate-view /> }
+        @if (s.ribbonTab === 'Estimating') { <app-estimate-view /> }
         @if (s.ribbonTab === 'Templates') { <app-templates-view /> }
         <!-- OCR panel (text recognition) over the plan -->
         @if (ocr.panelOpen()) { <app-ocr-panel /> }
@@ -82,7 +85,7 @@ import { OcrService } from './services/ocr';
         <!-- Short message after saving or exporting -->
         @if (s.toastMessage) {
           <div class="toast" [class.error]="s.toastIsError">
-            <span class="icon small">{{ s.toastIsError ? 'warning' : 'check_circle' }}</span>{{ s.toastMessage }}
+            <app-icon class="icon small" [name]="s.toastIsError ? 'warning' : 'check_circle'" />{{ s.toastMessage }}
           </div>
         }
       </div>
@@ -116,7 +119,6 @@ export class App {
   readonly sidebarMode = signal<'elements' | 'pages'>('elements');
 
   constructor() {
-    loadIconFont();
   }
 
   panes(): number[] {
@@ -189,15 +191,4 @@ export class App {
       if (e.shiftKey) this.store.saveAs(); else this.store.save();
     }
   }
-}
-
-// Material Symbols icon font (Google Fonts stylesheet added once to the document head)
-function loadIconFont(): void {
-  const id = 'material-symbols-font';
-  if (document.getElementById(id)) return;
-  const sheet = document.createElement('link');
-  sheet.id = id;
-  sheet.rel = 'stylesheet';
-  sheet.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0';
-  document.head.appendChild(sheet);
 }

@@ -1,13 +1,15 @@
 import { ChangeDetectionStrategy, Component, inject, output, signal } from '@angular/core';
 import { COLORS, SCALE_GROUPS, TakeoffKind, kindIcon, kindTitle } from '../../models/takeoff';
-import { DrawingStore, RibbonTab } from '../../services/drawing.store';
-import { MARKUP_TOOLS, MarkupTools } from '../../services/markup-tools';
-import { OcrService } from '../../services/ocr';
-import { TemplateLibrary } from '../../services/template-library';
+import { DrawingStore, RibbonTab } from '../../services/drawing.store/drawing.store';
+import { MARKUP_TOOLS, MarkupTools } from '../../services/markup-tools/markup-tools';
+import { OcrService } from '../../services/ocr/ocr';
+import { TemplateLibrary } from '../../services/template-library/template-library';
+import { Icon } from '../icon/icon';
 
 // Ribbon-style top bar with tabs (Home, Estimating, Templates) — port of RibbonView.swift
 @Component({
   selector: 'app-ribbon',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'ribbon', '(document:click)': 'openMenu.set(null)' },
   styles: [`
@@ -32,16 +34,16 @@ import { TemplateLibrary } from '../../services/template-library';
       <div class="ribbon-group">
         <div class="ribbon-buttons">
           <button class="ribbon-button" title="Open File (⌘O)" (click)="openFile.emit()">
-            <span class="icon accent">folder_open</span><span>Open File</span>
+            <app-icon class="icon accent" name="folder_open" /><span>Open File</span>
           </button>
           <button class="ribbon-button" title="Save (⌘S)" [disabled]="!s.hasDocument" (click)="s.save()">
-            <span class="icon accent">save</span><span>Save</span>
+            <app-icon class="icon accent" name="save" /><span>Save</span>
           </button>
           <button class="ribbon-button" title="Save As (⇧⌘S)" [disabled]="!s.hasDocument" (click)="s.saveAs()">
-            <span class="icon accent">save_as</span><span>Save As</span>
+            <app-icon class="icon accent" name="save_as" /><span>Save As</span>
           </button>
           <button class="ribbon-button" title="Close File" [disabled]="!s.hasDocument" (click)="s.closeDocument()">
-            <span class="icon accent">close</span><span>Close</span>
+            <app-icon class="icon accent" name="close" /><span>Close</span>
           </button>
         </div>
         <div class="ribbon-group-title">File</div>
@@ -53,7 +55,7 @@ import { TemplateLibrary } from '../../services/template-library';
             <!-- Scale: opens a list of scales -->
             <div class="menu-anchor">
               <button class="ribbon-button" title="Scale" (click)="toggleMenu('scale', $event)">
-                <span class="icon">straighten</span><span>Scale</span>
+                <app-icon class="icon" name="straighten" /><span>Scale</span>
               </button>
               @if (openMenu() === 'scale') {
                 <div class="menu scale-menu" (click)="$event.stopPropagation()">
@@ -75,12 +77,17 @@ import { TemplateLibrary } from '../../services/template-library';
             </div>
             <button class="ribbon-button" title="Dimension" [class.active]="s.selectedItem?.name === 'Dimension'"
                     (click)="s.startDimension()">
-              <span class="icon" [style.color]="colors.blue">straighten</span><span>Dimension</span>
+              <app-icon class="icon" [style.color]="colors.blue" name="straighten" /><span>Dimension</span>
             </button>
             <!-- Snap: measuring clicks jump to the vertices of the drawing -->
             <button class="ribbon-button" title="Snap" [class.active]="s.snapEnabled"
                     (click)="s.snapEnabled = !s.snapEnabled">
-              <span class="icon" [style.color]="colors.green">my_location</span><span>Snap</span>
+              <app-icon class="icon" [style.color]="colors.green" name="my_location" /><span>Snap</span>
+            </button>
+            <!-- Ortho: straight horizontal / vertical lines (also while Shift is held) -->
+            <button class="ribbon-button" title="Ortho: straight horizontal and vertical lines (hold Shift)" [class.active]="s.orthoEnabled"
+                    (click)="s.orthoEnabled = !s.orthoEnabled">
+              <app-icon class="icon" [style.color]="colors.orange" name="square_foot" /><span>Ortho</span>
             </button>
           </div>
           <div class="ribbon-group-title">Measure</div>
@@ -93,10 +100,10 @@ import { TemplateLibrary } from '../../services/template-library';
                    arrow = pick another item or create a new one -->
               <div class="menu-anchor ribbon-split" [class.active]="s.activeKind === t.kind && s.selectedItem?.name !== 'Dimension'">
                 <button class="ribbon-button" [title]="title(t.kind)" (click)="s.startTakeoff(t.kind)">
-                  <span class="icon" [style.color]="t.color">{{ icon(t.kind) }}</span><span>{{ title(t.kind) }}</span>
+                  <app-icon class="icon" [style.color]="t.color" [name]="icon(t.kind)" /><span>{{ title(t.kind) }}</span>
                 </button>
                 <button class="ribbon-arrow" (click)="toggleMenu(t.kind, $event)">
-                  <span class="icon small">expand_more</span>
+                  <app-icon class="icon small" name="expand_more" />
                 </button>
                 @if (openMenu() === t.kind) {
                   <div class="menu" (click)="$event.stopPropagation()">
@@ -123,7 +130,7 @@ import { TemplateLibrary } from '../../services/template-library';
             @for (t of markupTools; track t.kind) {
               <button class="markup-button" [class.active]="markups.tool() === t.kind" [disabled]="!s.hasDocument"
                       [title]="t.title + ' — ' + t.hint" (click)="markups.start(t.kind)">
-                <span class="icon">{{ t.icon }}</span>
+                <app-icon class="icon" [name]="t.icon" />
               </button>
             }
           </div>
@@ -136,17 +143,17 @@ import { TemplateLibrary } from '../../services/template-library';
             <button class="ribbon-button" title="Snapshot: drag a box to copy that region"
                     [disabled]="!s.hasDocument" [class.active]="s.snapshotMode === 'capture'"
                     (click)="s.snapshotMode === 'capture' ? s.cancelSnapshot() : s.startSnapshot()">
-              <span class="icon" [style.color]="colors.purple">screenshot_region</span><span>Snapshot</span>
+              <app-icon class="icon" [style.color]="colors.purple" name="screenshot_region" /><span>Snapshot</span>
             </button>
             <button class="ribbon-button" title="Paste the snapshot (Ctrl+V)"
                     [disabled]="!s.hasDocument || !s.snapshotClip" [class.active]="s.snapshotMode === 'place'"
                     (click)="s.snapshotMode === 'place' ? s.cancelSnapshot() : s.pasteSnapshot()">
-              <span class="icon" [style.color]="colors.purple">content_paste</span><span>Paste</span>
+              <app-icon class="icon" [style.color]="colors.purple" name="content_paste" /><span>Paste</span>
             </button>
             <button class="ribbon-button" title="Overlay: show another page on top in a different color"
                     [disabled]="!s.hasDocument || s.pageCount < 2" [class.active]="!!store.overlay()"
                     (click)="store.overlay() ? s.closeOverlay() : s.startOverlay()">
-              <span class="icon" [style.color]="colors.orange">layers</span><span>Overlay</span>
+              <app-icon class="icon" [style.color]="colors.orange" name="layers" /><span>Overlay</span>
             </button>
           </div>
           <div class="ribbon-group-title">Compare</div>
@@ -157,10 +164,10 @@ import { TemplateLibrary } from '../../services/template-library';
             <div class="menu-anchor ribbon-split" [class.active]="ocr.drawingRegion() || ocr.busy()">
               <button class="ribbon-button" title="OCR: drag a box around text to recognize it"
                       [disabled]="!s.hasDocument" (click)="ocr.startRegion()">
-                <span class="icon" [style.color]="colors.purple">document_scanner</span><span>OCR</span>
+                <app-icon class="icon" [style.color]="colors.purple" name="document_scanner" /><span>OCR</span>
               </button>
               <button class="ribbon-arrow" [disabled]="!s.hasDocument" (click)="toggleMenu('ocr', $event)">
-                <span class="icon small">expand_more</span>
+                <app-icon class="icon small" name="expand_more" />
               </button>
               @if (openMenu() === 'ocr') {
                 <div class="menu" (click)="$event.stopPropagation()">
@@ -180,16 +187,16 @@ import { TemplateLibrary } from '../../services/template-library';
         <div class="ribbon-group">
           <div class="ribbon-buttons">
             <button class="ribbon-button" title="New Group" [disabled]="!s.hasDocument" (click)="s.newEstimateGroup()">
-              <span class="icon accent">create_new_folder</span><span>New Group</span>
+              <app-icon class="icon accent" name="create_new_folder" /><span>New Group</span>
             </button>
             <button class="ribbon-button" (click)="s.estimateCollapsed.clear(); s.touch()">
-              <span class="icon">unfold_more</span><span>Expand All</span>
+              <app-icon class="icon" name="unfold_more" /><span>Expand All</span>
             </button>
             <button class="ribbon-button" (click)="collapseAll()">
-              <span class="icon">unfold_less</span><span>Collapse All</span>
+              <app-icon class="icon" name="unfold_less" /><span>Collapse All</span>
             </button>
             <button class="ribbon-button" title="Export to Excel (.xlsx)" [disabled]="!s.hasDocument" (click)="s.exportExcel()">
-              <span class="icon" [style.color]="colors.green">table_view</span><span>Export to Excel</span>
+              <app-icon class="icon" [style.color]="colors.green" name="table_view" /><span>Export to Excel</span>
             </button>
           </div>
           <div class="ribbon-group-title">Estimate</div>
@@ -200,10 +207,10 @@ import { TemplateLibrary } from '../../services/template-library';
           <div class="ribbon-buttons">
             <div class="menu-anchor ribbon-split">
               <button class="ribbon-button" title="New Part" [disabled]="!s.hasDocument" (click)="s.newPart(false)">
-                <span class="icon" [style.color]="colors.orange">add_box</span><span>New Part</span>
+                <app-icon class="icon" [style.color]="colors.orange" name="add_box" /><span>New Part</span>
               </button>
               <button class="ribbon-arrow" [disabled]="!s.hasDocument" (click)="toggleMenu('part', $event)">
-                <span class="icon small">expand_more</span>
+                <app-icon class="icon small" name="expand_more" />
               </button>
               @if (openMenu() === 'part') {
                 <div class="menu" (click)="$event.stopPropagation()">
@@ -211,19 +218,28 @@ import { TemplateLibrary } from '../../services/template-library';
                   <button class="menu-item" [disabled]="!s.canAddSubItem" (click)="openMenu.set(null); s.newPart(true)">
                     As Sub-Item
                   </button>
+                  @if (partTemplates().length) {
+                    <div class="menu-divider"></div>
+                    <div class="menu-header">Part Templates (under the selected row)</div>
+                    @for (t of partTemplates(); track t.id) {
+                      <button class="menu-item" [disabled]="!s.canAddSubItem" (click)="openMenu.set(null); library.addPartToDocument(t)">
+                        <app-icon class="icon small" style="color: #ff9500" name="widgets" />{{ t.name }}
+                      </button>
+                    }
+                  }
                 </div>
               }
             </div>
             <button class="ribbon-button" title="Properties of the selected row"
                     [disabled]="!s.canAddSubItem" (click)="s.openProperties()">
-              <span class="icon">tune</span><span>Properties</span>
+              <app-icon class="icon" name="tune" /><span>Properties</span>
             </button>
             <button class="ribbon-button" title="Delete the selected part or group"
                     [disabled]="!s.selectedEstimateKey" (click)="s.deleteEstimateSelection()">
-              <span class="icon" [style.color]="colors.red">delete</span><span>Delete</span>
+              <app-icon class="icon" [style.color]="colors.red" name="delete" /><span>Delete</span>
             </button>
             <button class="ribbon-button" title="Columns of the estimate" [disabled]="!s.hasDocument" (click)="s.openColumns()">
-              <span class="icon">view_column</span><span>Columns</span>
+              <app-icon class="icon" name="view_column" /><span>Columns</span>
             </button>
           </div>
           <div class="ribbon-group-title">Items</div>
@@ -234,22 +250,26 @@ import { TemplateLibrary } from '../../services/template-library';
         <div class="ribbon-group">
           <div class="ribbon-buttons">
             <button class="ribbon-button" title="New Folder" (click)="lib.newFolder()">
-              <span class="icon" [style.color]="colors.yellow">create_new_folder</span><span>New Folder</span>
+              <app-icon class="icon" [style.color]="colors.yellow" name="create_new_folder" /><span>New Folder</span>
             </button>
             <div class="menu-anchor ribbon-split">
               <button class="ribbon-button" title="New Template" (click)="toggleMenu('newTemplate', $event)">
-                <span class="icon accent">note_add</span><span>New Template</span>
+                <app-icon class="icon accent" name="note_add" /><span>New Template</span>
               </button>
               <button class="ribbon-arrow" (click)="toggleMenu('newTemplate', $event)">
-                <span class="icon small">expand_more</span>
+                <app-icon class="icon small" name="expand_more" />
               </button>
               @if (openMenu() === 'newTemplate') {
                 <div class="menu" (click)="$event.stopPropagation()">
                   @for (t of takeoffs; track t.kind) {
                     <button class="menu-item" (click)="openMenu.set(null); lib.newTemplate(t.kind)">
-                      <span class="icon small" [style.color]="t.color">{{ icon(t.kind) }}</span>{{ title(t.kind) }}
+                      <app-icon class="icon small" [style.color]="t.color" [name]="icon(t.kind)" />{{ title(t.kind) }}
                     </button>
                   }
+                  <div class="menu-divider"></div>
+                  <button class="menu-item" title="A part to add under any item of the estimate" (click)="openMenu.set(null); lib.newPartTemplate()">
+                    <app-icon class="icon small" style="color: #ff9500" name="widgets" />Part
+                  </button>
                 </div>
               }
             </div>
@@ -257,10 +277,10 @@ import { TemplateLibrary } from '../../services/template-library';
             <div class="menu-anchor ribbon-split">
               <button class="ribbon-button" title="Save an element of this drawing as a template"
                       [disabled]="!s.hasDocument" (click)="toggleMenu('fromDocument', $event)">
-                <span class="icon" [style.color]="colors.purple">input</span><span>Add from Document</span>
+                <app-icon class="icon" [style.color]="colors.purple" name="input" /><span>Add from Document</span>
               </button>
               <button class="ribbon-arrow" [disabled]="!s.hasDocument" (click)="toggleMenu('fromDocument', $event)">
-                <span class="icon small">expand_more</span>
+                <app-icon class="icon small" name="expand_more" />
               </button>
               @if (openMenu() === 'fromDocument') {
                 <div class="menu" (click)="$event.stopPropagation()">
@@ -280,21 +300,22 @@ import { TemplateLibrary } from '../../services/template-library';
 
         <div class="ribbon-group">
           <div class="ribbon-buttons">
-            <button class="ribbon-button" title="Measure with the selected template on the plan"
+            <button class="ribbon-button"
+                    [title]="lib.selectedTemplate?.isPart ? 'Add the selected part template under the item selected in the estimate' : 'Measure with the selected template on the plan'"
                     [disabled]="!s.hasDocument || !lib.selectedTemplate" (click)="lib.useTemplate()">
-              <span class="icon" [style.color]="colors.green">play_circle</span><span>Use Template</span>
+              <app-icon class="icon" [style.color]="colors.green" name="play_circle" /><span>Use Template</span>
             </button>
             <button class="ribbon-button" title="New Part under the selected template or part"
                     [disabled]="!lib.selectedTemplate" (click)="lib.newPart()">
-              <span class="icon" [style.color]="colors.orange">add_box</span><span>New Part</span>
+              <app-icon class="icon" [style.color]="colors.orange" name="add_box" /><span>New Part</span>
             </button>
             <button class="ribbon-button" title="Duplicate the selected template"
                     [disabled]="!lib.selectedTemplate || lib.selection?.type !== 'template'" (click)="lib.duplicate()">
-              <span class="icon">content_copy</span><span>Duplicate</span>
+              <app-icon class="icon" name="content_copy" /><span>Duplicate</span>
             </button>
             <button class="ribbon-button" title="Delete the selected folder, template or part"
                     [disabled]="!lib.selection" (click)="lib.deleteSelection()">
-              <span class="icon" [style.color]="colors.red">delete</span><span>Delete</span>
+              <app-icon class="icon" [style.color]="colors.red" name="delete" /><span>Delete</span>
             </button>
           </div>
           <div class="ribbon-group-title">Templates</div>
@@ -303,10 +324,10 @@ import { TemplateLibrary } from '../../services/template-library';
         <div class="ribbon-group">
           <div class="ribbon-buttons">
             <button class="ribbon-button" title="Add templates from a .json file" (click)="lib.importLibrary()">
-              <span class="icon accent">upload_file</span><span>Import</span>
+              <app-icon class="icon accent" name="upload_file" /><span>Import</span>
             </button>
             <button class="ribbon-button" title="Save the whole library as a .json file" (click)="lib.exportLibrary()">
-              <span class="icon accent">download</span><span>Export</span>
+              <app-icon class="icon accent" name="download" /><span>Export</span>
             </button>
           </div>
           <div class="ribbon-group-title">Share</div>
@@ -321,6 +342,9 @@ export class Ribbon {
   readonly markupTools = MARKUP_TOOLS;
   readonly ocr = inject(OcrService);
   readonly library = inject(TemplateLibrary);
+
+  // Part templates of the library, offered in the Estimating New Part menu
+  partTemplates() { return this.library.watch().data.templates.filter(t => t.isPart); }
   readonly openFile = output<void>();
   readonly openMenu = signal<string | null>(null);
   readonly tabs: RibbonTab[] = ['Home', 'Estimating', 'Templates'];

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
-import { DrawingStore } from '../../services/drawing.store';
-import { PageLabeler } from '../../services/page-labels';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { PageLabeler } from '../../services/page-labels/page-labels';
 import { parseRange } from '../insert-pages-dialog/insert-pages-dialog';
 
 // "Create Page Labels" (like Revu): name the pages from the bookmarks, or from the text

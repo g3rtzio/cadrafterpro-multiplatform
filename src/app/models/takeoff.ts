@@ -172,6 +172,20 @@ const AREA_UNIT: Record<LengthUnit, string> = {
   'ft\' in"': 'sf', ft: 'sf', in: 'sq in', yd: 'sy', mi: 'sq mi', mm: 'mm²', cm: 'cm²', m: 'm²', km: 'km²',
 };
 
+// Units an area can be shown in (each is the square of a length unit; feet-and-inches areas are SF)
+export const AREA_UNITS: LengthUnit[] = ['ft', 'in', 'yd', 'mi', 'mm', 'cm', 'm', 'km'];
+const AREA_UNIT_NAME: Record<LengthUnit, string> = {
+  'ft\' in"': 'Square feet (sf)', ft: 'Square feet (sf)', in: 'Square inches (sq in)', yd: 'Square yards (sy)',
+  mi: 'Square miles (sq mi)', mm: 'Square millimeters (mm²)', cm: 'Square centimeters (cm²)', m: 'Square meters (m²)',
+  km: 'Square kilometers (km²)',
+};
+export function areaUnitName(unit: LengthUnit): string { return AREA_UNIT_NAME[unit]; }
+const LENGTH_UNIT_NAME: Record<LengthUnit, string> = {
+  'ft\' in"': 'Feet and inches (ft\' in")', ft: 'Feet (ft)', in: 'Inches (in)', yd: 'Yards (yd)', mi: 'Miles (mi)',
+  mm: 'Millimeters (mm)', cm: 'Centimeters (cm)', m: 'Meters (m)', km: 'Kilometers (km)',
+};
+export function lengthUnitName(unit: LengthUnit): string { return LENGTH_UNIT_NAME[unit]; }
+
 // "24'-9 1/4\"", "8.50 ft", "2.59 m"
 export function lengthText(unit: LengthUnit, feet: number): string {
   if (unit !== 'ft\' in"') return `${(feet * PER_FOOT[unit]).toFixed(2)} ${unit}`;

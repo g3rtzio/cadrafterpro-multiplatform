@@ -1,21 +1,23 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
-import { DrawingStore } from '../../services/drawing.store';
-import { OcrService } from '../../services/ocr';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { OcrService } from '../../services/ocr/ocr';
+import { Icon } from '../icon/icon';
 
 // Floating OCR panel over the plan: progress while reading, the text of the last region
 // (editable and copyable), the pages already recognized, a find box over the recognized text
 // and the OCR options.
 @Component({
   selector: 'app-ocr-panel',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'ocr-panel', '(mousedown)': '$event.stopPropagation()' },
   template: `
     @let s = store.watch();
     <div class="ocr-header">
-      <span class="icon small accent">document_scanner</span>
+      <app-icon class="icon small accent" name="document_scanner" />
       <strong>OCR</strong>
       <span class="spacer"></span>
-      <button class="icon-button" title="Close" (click)="ocr.panelOpen.set(false)"><span class="icon small">close</span></button>
+      <button class="icon-button" title="Close" (click)="ocr.panelOpen.set(false)"><app-icon class="icon small" name="close" /></button>
     </div>
 
     <!-- Progress -->
@@ -30,13 +32,13 @@ import { OcrService } from '../../services/ocr';
     <!-- Commands -->
     <div class="ocr-section ocr-row">
       <button [disabled]="!s.hasDocument || ocr.busy()" (click)="ocr.startRegion()" title="Drag a box on the plan">
-        <span class="icon small">crop_free</span> Region
+        <app-icon class="icon small" name="crop_free" /> Region
       </button>
       <button [disabled]="!s.hasDocument || ocr.busy()" (click)="ocr.recognizeCurrentPage()">
-        <span class="icon small">description</span> Page
+        <app-icon class="icon small" name="description" /> Page
       </button>
       <button [disabled]="!s.hasDocument || ocr.busy()" (click)="ocr.recognizeAllPages()">
-        <span class="icon small">library_books</span> All Pages
+        <app-icon class="icon small" name="library_books" /> All Pages
       </button>
     </div>
 
@@ -46,7 +48,7 @@ import { OcrService } from '../../services/ocr';
         <div class="ocr-row">
           <span class="secondary small">Region on {{ s.pageName(ocr.pageIndexOf(region.page)) }} · {{ region.words.length }} words</span>
           <span class="spacer"></span>
-          <button [disabled]="!regionText()" (click)="ocr.copy(regionText())"><span class="icon small">content_copy</span> Copy</button>
+          <button [disabled]="!regionText()" (click)="ocr.copy(regionText())"><app-icon class="icon small" name="content_copy" /> Copy</button>
         </div>
         <textarea class="ocr-text" rows="6" spellcheck="false" [value]="region.text"
                   (input)="editedRegion.set($any($event.target).value)"
@@ -68,13 +70,13 @@ import { OcrService } from '../../services/ocr';
             <span class="secondary small">{{ r.words.length }} words @if (r.embedded) { · text layer }</span>
             <span class="spacer"></span>
             <button class="icon-button" title="Copy the text of the page" (click)="ocr.copy(r.text)">
-              <span class="icon small">content_copy</span>
+              <app-icon class="icon small" name="content_copy" />
             </button>
           </div>
         }
         <!-- Find in the recognized text -->
         <div class="ocr-find">
-          <span class="icon small secondary">search</span>
+          <app-icon class="icon small secondary" name="search" />
           <input type="search" placeholder="Find in recognized text" [value]="query()"
                  (input)="query.set($any($event.target).value)" />
         </div>

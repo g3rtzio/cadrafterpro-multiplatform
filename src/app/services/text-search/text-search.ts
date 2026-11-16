@@ -1,8 +1,8 @@
 import { Injectable, effect, inject, signal, untracked } from '@angular/core';
-import { Markup, Measurement } from '../models/elements';
-import { COLORS, Pt, Rect, boundsOf } from '../models/takeoff';
-import { DrawingStore } from './drawing.store';
-import { textWidth } from './shapes';
+import { Markup, Measurement } from '../../models/elements';
+import { COLORS, Pt, Rect, boundsOf } from '../../models/takeoff';
+import { DrawingStore } from '../drawing.store/drawing.store';
+import { textWidth } from '../shapes/shapes';
 
 // Text search of the right side bar (like Revu's Search panel): finds words in the text of the
 // drawing (read with pdf.js) and, optionally, in the markups. The results are listed in the panel
@@ -288,6 +288,15 @@ export class TextSearch {
       match: clean(text.text.slice(start, end)),
       after: clean(text.text.slice(end, end + 40)).trimEnd(),
     };
+  }
+
+  // Pieces of text of a page with their box in page coordinates (the AI assistant uses them
+  // to place counts exactly on tags and labels)
+  async pageWords(pageIndex: number): Promise<{ str: string; rect: Rect }[]> {
+    const text = await this.pageText(pageIndex);
+    return text.spans
+      .filter(span => span.str.trim())
+      .map(span => ({ str: span.str.trim(), rect: pieceRect(span, 0, 1) }));
   }
 
   // Text of a page in reading order, with a space or a line break where pieces don't touch

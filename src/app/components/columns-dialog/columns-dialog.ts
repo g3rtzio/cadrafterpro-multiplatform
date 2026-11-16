@@ -1,26 +1,28 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { ColumnDef, PropType } from '../../models/estimate';
-import { DrawingStore } from '../../services/drawing.store';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 // Columns window of the estimate (PlanSwift style): the list of columns, each one a property
 // shown for every row. Columns can be added, edited, reordered, hidden and deleted.
 @Component({
   selector: 'app-columns-dialog',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'dialog-backdrop', '(keydown.escape)': 'store.closeColumns()' },
   template: `
     <div class="dialog wide">
       <h2>Columns</h2>
       <div class="props-toolbar">
-        <button class="icon-button" title="New Column" (click)="add()"><span class="icon">add</span></button>
+        <button class="icon-button" title="New Column" (click)="add()"><app-icon class="icon" name="add" /></button>
         <button class="icon-button" title="Move Up" [disabled]="!canMove(-1)" (click)="move(-1)">
-          <span class="icon">arrow_upward</span>
+          <app-icon class="icon" name="arrow_upward" />
         </button>
         <button class="icon-button" title="Move Down" [disabled]="!canMove(1)" (click)="move(1)">
-          <span class="icon">arrow_downward</span>
+          <app-icon class="icon" name="arrow_downward" />
         </button>
         <button class="icon-button" title="Delete Column" [disabled]="selected() === null" (click)="remove()">
-          <span class="icon">delete</span>
+          <app-icon class="icon" name="delete" />
         </button>
         <span class="secondary small">The name of a column is the property it shows</span>
       </div>

@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, ElementRef, computed, inject, input, OnInit, signal, viewChild } from '@angular/core';
 import { PROPERTY_GROUPS, PropertyDef, PropType, evaluate, formatResult } from '../../models/estimate';
-import { DrawingStore } from '../../services/drawing.store';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 // Properties window of an element or a Part (PlanSwift style): every property with its
 // formula and calculated result, by group. Formulas are edited in place; double-clicking a
@@ -8,18 +9,19 @@ import { DrawingStore } from '../../services/drawing.store';
 // A property name can be dragged onto a formula. [..] copies the same property of the parent.
 @Component({
   selector: 'app-properties-dialog',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'dialog-backdrop', '(keydown.escape)': 'escape()' },
   template: `
     <div class="dialog wide">
       <h2>Properties: {{ title() }}</h2>
       <div class="props-toolbar">
-        <button class="icon-button" title="New Property" (click)="newProperty()"><span class="icon">add</span></button>
+        <button class="icon-button" title="New Property" (click)="newProperty()"><app-icon class="icon" name="add" /></button>
         <button class="icon-button" title="Edit Property" [disabled]="selected() === null" (click)="editSelected()">
-          <span class="icon">edit</span>
+          <app-icon class="icon" name="edit" />
         </button>
         <button class="icon-button" title="Delete Property" [disabled]="!canDelete()" (click)="deleteSelected()">
-          <span class="icon">delete</span>
+          <app-icon class="icon" name="delete" />
         </button>
         <span class="secondary small">[Name] uses another property, [..] the same property of the parent</span>
       </div>
@@ -32,7 +34,7 @@ import { DrawingStore } from '../../services/drawing.store';
             @for (group of groups(); track group.name) {
               <tr class="props-group" (click)="toggleGroup(group.name)">
                 <td colspan="5">
-                  <span class="icon small">{{ closedGroups().has(group.name) ? 'chevron_right' : 'expand_more' }}</span>
+                  <app-icon class="icon small" [name]="closedGroups().has(group.name) ? 'chevron_right' : 'expand_more'" />
                   {{ group.name }}
                 </td>
               </tr>

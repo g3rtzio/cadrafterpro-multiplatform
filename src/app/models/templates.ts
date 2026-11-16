@@ -26,6 +26,7 @@ export interface TakeoffTemplate {
   color: string;
   props: PropertyDef[];           // element properties (Name, Qty, Cost Each…)
   parts: TemplatePart[];
+  isPart?: boolean;               // part template: added under an item of the estimate (not measured); parts = its sub-parts
 }
 
 export interface TemplateLibraryData {
@@ -82,9 +83,19 @@ export function starterLibrary(): TemplateLibraryData {
       item('Concrete Slab', 'area', COLORS.green, 0, [{ name: 'Concrete', cost: 0 }, { name: 'Wire Mesh', cost: 0 }]),
       item('Footing', 'length', COLORS.blue, 0),
       item('Duplex Outlet', 'count', COLORS.red, 0, [{ name: 'Box', cost: 0 }, { name: 'Cover Plate', cost: 0 }]),
+      partItem(base.id, 'Labor Hour', 0),
     ],
   };
 }
+
+// A part template of the starter library
+function partItem(folderId: string, name: string, cost: number): TakeoffTemplate {
+  const props = partTemplate(name);
+  setFormula(props, 'Cost Each', String(cost));
+  return { id: newId('tpl'), folderId, name, kind: 'count', color: PART_COLOR, props, parts: [], isPart: true };
+}
+
+export const PART_COLOR = '#FF9500';
 
 // Built-in layouts: the default columns, a takeoff-only view and a cost view
 export function starterLayouts(): EstimateLayout[] {

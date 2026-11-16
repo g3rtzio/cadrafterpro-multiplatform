@@ -1,6 +1,6 @@
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport, RenderTask } from 'pdfjs-dist';
-import { Pt, Rect } from '../models/takeoff';
+import { Pt, Rect } from '../../models/takeoff';
 
 // Draws the PDF pages with pdf.js (it plays the role PDFKit's PDFView had on the Mac).
 // Markups are not drawn by pdf.js: the app draws them on its own SVG layer,

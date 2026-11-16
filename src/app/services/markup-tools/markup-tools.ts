@@ -1,9 +1,9 @@
 import { Injectable, effect, inject, signal, untracked } from '@angular/core';
-import { LINE_HEIGHT, Markup, TEXT_PADDING, wrapText } from '../models/elements';
-import { COLORS, Pt, Rect, rectFromPoints } from '../models/takeoff';
-import { DrawingStore } from './drawing.store';
-import { PageGeometry } from './pdf-render';
-import { textWidth } from './shapes';
+import { LINE_HEIGHT, Markup, TEXT_PADDING, wrapText } from '../../models/elements';
+import { COLORS, Pt, Rect, rectFromPoints } from '../../models/takeoff';
+import { DrawingStore } from '../drawing.store/drawing.store';
+import { PageGeometry } from '../pdf-render/pdf-render';
+import { textWidth } from '../shapes/shapes';
 
 // Markup tools of the Home tab (like Bluebeam Revu): text box, callout, cloud, rectangle, ellipse,
 // line, arrow, polyline, polygon, pen and highlight. The markups they draw are ordinary PDF markups

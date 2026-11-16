@@ -1,11 +1,13 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { Markup } from '../../models/elements';
 import { TakeoffItem, kindIcon, kindUnit } from '../../models/takeoff';
-import { DrawingStore, MarkupGroup } from '../../services/drawing.store';
+import { DrawingStore, MarkupGroup } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 // Element tree: pages › takeoff items and groups of PDF markups — port of TakeoffTreeView.swift
 @Component({
   selector: 'app-takeoff-tree',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'tree' },
   template: `
@@ -22,9 +24,9 @@ import { DrawingStore, MarkupGroup } from '../../services/drawing.store';
            (dblclick)="startEdit('page-' + index, s.pageNames.get(index) ?? '')"
            (contextmenu)="$event.preventDefault(); startEdit('page-' + index, s.pageNames.get(index) ?? '')">
         <button class="disclosure" (click)="$event.stopPropagation(); toggle('page-' + index)">
-          <span class="icon small">{{ isOpen('page-' + index) ? 'expand_more' : 'chevron_right' }}</span>
+          <app-icon class="icon small" [name]="isOpen('page-' + index) ? 'expand_more' : 'chevron_right'" />
         </button>
-        <span class="icon small">{{ isCurrent ? 'description' : 'draft' }}</span>
+        <app-icon class="icon small" [name]="isCurrent ? 'description' : 'draft'" />
         @if (editingKey() === 'page-' + index) {
           <input class="rename" [value]="editText()" placeholder="Leave empty for the default name" (click)="$event.stopPropagation()"
                  (input)="editText.set($any($event.target).value)" (keydown.enter)="finishPageRename(index)"
@@ -51,12 +53,12 @@ import { DrawingStore, MarkupGroup } from '../../services/drawing.store';
                  (contextmenu)="$event.preventDefault(); startEdit('item-' + item.id, item.name)">
               @if (saved.length) {
                 <button class="disclosure" (click)="$event.stopPropagation(); toggle(itemKey)">
-                  <span class="icon small">{{ isOpen(itemKey) ? 'expand_more' : 'chevron_right' }}</span>
+                  <app-icon class="icon small" [name]="isOpen(itemKey) ? 'expand_more' : 'chevron_right'" />
                 </button>
               }
               <button class="dot" [class.on]="active" [title]="active ? 'Stop measuring' : 'Continue measuring on this page'"
                       (click)="$event.stopPropagation(); toggleItem(item)"></button>
-              <span class="icon small" [style.color]="item.color">{{ icon(item) }}</span>
+              <app-icon class="icon small" [style.color]="item.color" [name]="icon(item)" />
               @if (editingKey() === 'item-' + item.id) {
                 <input class="rename" [value]="editText()" (click)="$event.stopPropagation()"
                        (input)="editText.set($any($event.target).value)" (keydown.enter)="finishItemRename(item)"
@@ -68,20 +70,20 @@ import { DrawingStore, MarkupGroup } from '../../services/drawing.store';
               <span class="swatch" [style.background]="item.color"></span>
               <button class="bulb" [class.on]="item.isVisible"
                       (click)="$event.stopPropagation(); s.toggleVisibility(item.id); s.setVisible(saved, item.isVisible)">
-                <span class="icon small">lightbulb</span>
+                <app-icon class="icon small" name="lightbulb" />
               </button>
               <button class="row-delete" title="Delete" (click)="$event.stopPropagation(); s.selectElements(measured); s.deleteSelected()">
-                <span class="icon small">delete</span>
+                <app-icon class="icon small" name="delete" />
               </button>
             </div>
             @if (saved.length && isOpen(itemKey)) {
               <div class="tree-children">
                 @for (m of saved; track m.id; let i = $index) {
                   <div class="tree-row" [class.selected]="s.isSelected(m)" (click)="s.selectElements([m]); s.showElement(m)">
-                    <span class="icon small" [style.color]="m.color ?? '#8E8E93'">check_box_outline_blank</span>
+                    <app-icon class="icon small" [style.color]="m.color ?? '#8E8E93'" name="check_box_outline_blank" />
                     <span class="name" [class.dimmed]="!m.visible">{{ m.contents || m.typeName + ' ' + (i + 1) }}</span>
                     <button class="bulb" [class.on]="m.visible" (click)="$event.stopPropagation(); s.setVisible([m], !m.visible)">
-                      <span class="icon small">lightbulb</span>
+                      <app-icon class="icon small" name="lightbulb" />
                     </button>
                   </div>
                 }
@@ -101,7 +103,7 @@ import { DrawingStore, MarkupGroup } from '../../services/drawing.store';
                  (dblclick)="startEdit(key, group.name)"
                  (contextmenu)="$event.preventDefault(); startEdit(key, group.name)">
               <button class="disclosure" (click)="$event.stopPropagation(); toggle(key)">
-                <span class="icon small">{{ isOpen(key) ? 'expand_more' : 'chevron_right' }}</span>
+                <app-icon class="icon small" [name]="isOpen(key) ? 'expand_more' : 'chevron_right'" />
               </button>
               <!-- Green dot: keep adding the same element with every click on the plan -->
               <button class="dot" [class.on]="active" [title]="active ? 'Stop counting' : 'Continue counting'"
@@ -117,10 +119,10 @@ import { DrawingStore, MarkupGroup } from '../../services/drawing.store';
               <span class="qty">{{ group.markups.length }}</span>
               <span class="swatch" [style.background]="group.color"></span>
               <button class="bulb" [class.on]="group.isVisible" (click)="$event.stopPropagation(); s.setVisible(group.markups, !group.isVisible)">
-                <span class="icon small">lightbulb</span>
+                <app-icon class="icon small" name="lightbulb" />
               </button>
               <button class="row-delete" title="Delete" (click)="$event.stopPropagation(); s.selectElements(group.markups); s.deleteSelected()">
-                <span class="icon small">delete</span>
+                <app-icon class="icon small" name="delete" />
               </button>
             </div>
             @if (isOpen(key)) {
@@ -128,10 +130,10 @@ import { DrawingStore, MarkupGroup } from '../../services/drawing.store';
                 <!-- A single markup: click selects only that one -->
                 @for (m of group.markups; track m.id; let i = $index) {
                   <div class="tree-row" [class.selected]="s.isSelected(m)" (click)="s.selectElements([m]); s.showElement(m)">
-                    <span class="icon small" [style.color]="m.color ?? '#8E8E93'">check_box_outline_blank</span>
+                    <app-icon class="icon small" [style.color]="m.color ?? '#8E8E93'" name="check_box_outline_blank" />
                     <span class="name" [class.dimmed]="!m.visible">{{ m.contents || m.typeName + ' ' + (i + 1) }}</span>
                     <button class="bulb" [class.on]="m.visible" (click)="$event.stopPropagation(); s.setVisible([m], !m.visible)">
-                      <span class="icon small">lightbulb</span>
+                      <app-icon class="icon small" name="lightbulb" />
                     </button>
                   </div>
                 }

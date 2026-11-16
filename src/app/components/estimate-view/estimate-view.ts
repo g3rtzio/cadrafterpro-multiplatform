@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { ColumnDef } from '../../models/estimate';
-import { DrawingStore, EstimateRow } from '../../services/drawing.store';
+import { DrawingStore, EstimateRow } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 // One line of the table: a group, an element, or a part (indented under its parent)
 interface Line {
@@ -19,6 +20,7 @@ interface Line {
 // Dragging a row onto the empty part of the table takes it out of its group.
 @Component({
   selector: 'app-estimate-view',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'estimate',
@@ -35,7 +37,7 @@ interface Line {
     <div class="estimate-title">{{ s.fileName || 'Estimate' }}</div>
     @if (lines().length === 0) {
       <div class="estimate-empty">
-        <span class="icon big">list_alt</span>
+        <app-icon class="icon big" name="list_alt" />
         <div class="estimate-empty-title">No Elements</div>
         <div class="secondary">Measure on the plan or open a PDF with markups.</div>
       </div>
@@ -69,10 +71,10 @@ interface Line {
                 @if (col.name === 'Name') {
                   <td class="name-cell" [style.padding-left.px]="12 + line.depth * 20">
                     <span class="chevron" (click)="toggle(row, $event)">
-                      @if (line.canOpen) { <span class="icon small">{{ line.open ? 'expand_more' : 'chevron_right' }}</span> }
+                      @if (line.canOpen) { <app-icon class="icon small" [name]="line.open ? 'expand_more' : 'chevron_right'" /> }
                     </span>
                     @if (row.isFolder) {
-                      <span class="icon small secondary">folder</span>
+                      <app-icon class="icon small secondary" name="folder" />
                       @if (editing() === row.id) {
                         <input class="rename" [value]="row.name" (click)="$event.stopPropagation()" (dblclick)="$event.stopPropagation()"
                                (keydown.enter)="rename(row, $event)" (keydown.escape)="editing.set(null)"
@@ -83,11 +85,11 @@ interface Line {
                         <span class="secondary small"> ({{ row.children.length }})</span>
                         <button class="icon-button inline" title="Delete Group (its rows stay)"
                                 (click)="s.deleteEstimateGroup(row.id); $event.stopPropagation()">
-                          <span class="icon small">delete</span>
+                          <app-icon class="icon small" name="delete" />
                         </button>
                       }
                     } @else if (row.kind === 'part') {
-                      <span class="icon small part-icon" title="Part">deployed_code</span>{{ row.name }}
+                      <app-icon class="icon small part-icon" title="Part" name="deployed_code" />{{ row.name }}
                     } @else {
                       <span class="swatch" [style.background]="row.color"></span>{{ row.name }}
                     }

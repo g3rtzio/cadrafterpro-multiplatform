@@ -1,7 +1,8 @@
 import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
-import { DrawingStore } from '../../services/drawing.store';
-import { EstimateLayouts } from '../../services/estimate-layouts';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { EstimateLayouts } from '../../services/estimate-layouts/estimate-layouts';
 import { AutoFocus } from '../auto-focus/auto-focus';
+import { Icon } from '../icon/icon';
 
 // "Estimating Layouts" panel on the left of the estimate (PlanSwift style).
 // Click a layout to show its columns (order, widths) and groups. Change them in the estimate,
@@ -9,7 +10,7 @@ import { AutoFocus } from '../auto-focus/auto-focus';
 // Double-click renames. « folds the panel to a thin strip.
 @Component({
   selector: 'app-layouts-panel',
-  imports: [AutoFocus],
+  imports: [Icon, AutoFocus],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'layouts-panel', '[class.collapsed]': 'collapsed()' },
   template: `
@@ -17,56 +18,56 @@ import { AutoFocus } from '../auto-focus/auto-focus';
     @let s = store.watch();
     @if (collapsed()) {
       <button class="icon-button layouts-expand" title="Show Estimating Layouts" (click)="setCollapsed(false)">
-        <span class="icon small">keyboard_double_arrow_right</span>
+        <app-icon class="icon small" name="keyboard_double_arrow_right" />
       </button>
       <div class="layouts-vertical-title">Estimating Layouts</div>
     } @else {
       <div class="layouts-header">
         <span class="layouts-title">Estimating Layouts</span>
         <button class="icon-button" title="Hide" (click)="setCollapsed(true)">
-          <span class="icon small">keyboard_double_arrow_left</span>
+          <app-icon class="icon small" name="keyboard_double_arrow_left" />
         </button>
       </div>
       <div class="layouts-toolbar">
         <button class="icon-button" title="Save the current columns in the selected layout"
                 [disabled]="!s.hasDocument" (click)="l.save()">
-          <span class="icon small accent">save</span>
+          <app-icon class="icon small accent" name="save" />
         </button>
         <button class="icon-button" title="New layout with the current columns" [disabled]="!s.hasDocument" (click)="l.saveAsNew(); selected.set(l.activeId)">
-          <span class="icon small" style="color: #34c759">add</span>
+          <app-icon class="icon small" style="color: #34c759" name="add" />
         </button>
         <button class="icon-button" title="Delete layout" [disabled]="!selected() || l.layouts.length <= 1"
                 (click)="remove()">
-          <span class="icon small" style="color: #ff3b30">close</span>
+          <app-icon class="icon small" style="color: #ff3b30" name="close" />
         </button>
         <button class="icon-button" title="Rename" [disabled]="!selected()" (click)="l.startRename(selected()!)">
-          <span class="icon small">edit</span>
+          <app-icon class="icon small" name="edit" />
         </button>
         <button class="icon-button" title="Move Up" [disabled]="!selected()" (click)="l.move(selected()!, -1)">
-          <span class="icon small">arrow_upward</span>
+          <app-icon class="icon small" name="arrow_upward" />
         </button>
         <button class="icon-button" title="Move Down" [disabled]="!selected()" (click)="l.move(selected()!, 1)">
-          <span class="icon small">arrow_downward</span>
+          <app-icon class="icon small" name="arrow_downward" />
         </button>
         <button class="icon-button" title="Reload the selected layout (drops unsaved column changes)"
                 [disabled]="!l.active || !s.hasDocument" (click)="l.apply(l.active!.id)">
-          <span class="icon small">refresh</span>
+          <app-icon class="icon small" name="refresh" />
         </button>
         <button class="icon-button" title="Restore Default, Takeoff View and Cost View" (click)="l.restoreBuiltIns()">
-          <span class="icon small">restart_alt</span>
+          <app-icon class="icon small" name="restart_alt" />
         </button>
         <button class="icon-button" title="Import layouts (.json)" (click)="l.importLayouts()">
-          <span class="icon small accent">upload_file</span>
+          <app-icon class="icon small accent" name="upload_file" />
         </button>
         <button class="icon-button" title="Export all layouts (.json)" (click)="l.exportLayouts()">
-          <span class="icon small accent">download</span>
+          <app-icon class="icon small accent" name="download" />
         </button>
       </div>
       <div class="layouts-list">
         @for (layout of l.layouts; track layout.id) {
           <div class="tree-row" [class.current]="l.activeId === layout.id" [class.selected]="selected() === layout.id"
                (click)="pick(layout.id)" (dblclick)="l.startRename(layout.id)">
-            <span class="icon small secondary">view_column</span>
+            <app-icon class="icon small secondary" name="view_column" />
             @if (l.renaming === layout.id) {
               <input class="rename" [value]="layout.name" appAutoFocus
                      (click)="$event.stopPropagation()" (dblclick)="$event.stopPropagation()"

@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { DrawingStore } from '../../services/drawing.store';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
 
 // "Insert Pages" (like Revu's Insert Pages): which pages of the picked PDF to bring in and where
 @Component({

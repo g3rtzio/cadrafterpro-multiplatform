@@ -1,10 +1,11 @@
 import {
+  readableAngleAtHalfLength,
   Cubic, LINE_HEIGHT, Markup, Measurement, TEXT_PADDING, cloudCurves, ellipseCurves, lineEnding, pointAtHalfLength,
   wrapText,
-} from '../models/elements';
-import { COLORS, Pt, Rect, dashPattern, rectContains } from '../models/takeoff';
-import { DrawingStore } from './drawing.store';
-import { PageGeometry } from './pdf-render';
+} from '../../models/elements';
+import { COLORS, Pt, Rect, dashPattern, rectContains } from '../../models/takeoff';
+import { DrawingStore } from '../drawing.store/drawing.store';
+import { PageGeometry } from '../pdf-render/pdf-render';
 
 // What the SVG layer draws: paths and texts in view coordinates
 // (port of LivePreviewView.drawMeasurements and of PDFKit drawing the markups)
@@ -25,6 +26,7 @@ export interface Shape {
   fontWeight?: string;
   fontStyle?: string;
   anchor?: 'start' | 'middle';
+  rotate?: number;                 // text turned around (x, y), in degrees (follows a dimension line)
   baseline?: 'middle' | 'auto' | 'hanging';
   href?: string;                   // picture (pasted snapshot), drawn in the box x, y, w, h
   w?: number;
@@ -134,7 +136,7 @@ function measurementShapes(m: Measurement, toView: (p: Pt) => Pt, zoom: number, 
   switch (m.kind) {
     case 'count': shapes.push({ ...base, x: a.x, y: a.y, anchor: 'start', baseline: 'middle' }); break;
     case 'area': shapes.push({ ...base, x: a.x, y: a.y, anchor: 'middle', baseline: 'middle' }); break;
-    default: shapes.push({ ...base, x: a.x, y: a.y - (width + 2), anchor: 'middle', baseline: 'auto' });
+    default: shapes.push({ ...base, ...alongLine(points, a, width + 2), anchor: 'middle', baseline: 'auto' });
   }
 }
 
@@ -223,7 +225,8 @@ export function markupShapes(m: Markup, g: PageGeometry, shapes: Shape[]): void 
     const a = isArea
       ? { x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length }
       : pointAtHalfLength(pts);
-    shapes.push({ text: m.contents, x: a.x, y: isArea ? a.y : a.y - width - 2, fill: m.color ?? COLORS.black,
+    const place = isArea ? { x: a.x, y: a.y } : alongLine(pts, a, width + 2);
+    shapes.push({ text: m.contents, ...place, fill: m.color ?? COLORS.black,
       stroke: 'none', width: 0, opacity: m.opacity, fontSize: 10, fontFamily: SYSTEM_FONT, anchor: 'middle',
       baseline: isArea ? 'middle' : 'auto' });
   }
@@ -324,4 +327,12 @@ function textMarkupShapes(m: Markup, g: PageGeometry, shapes: Shape[]): void {
         break;
     }
   }
+}
+
+// Where a line's caption goes (view coordinates): `gap` above the middle of the line,
+// turned to follow it, so a vertical dimension reads like the ones on the drawing
+function alongLine(points: Pt[], middle: Pt, gap: number): { x: number; y: number; rotate?: number } {
+  const angle = readableAngleAtHalfLength(points, true);
+  if (Math.abs(angle) < 1e-3) return { x: middle.x, y: middle.y - gap };
+  return { x: middle.x + Math.sin(angle) * gap, y: middle.y - Math.cos(angle) * gap, rotate: angle * 180 / Math.PI };
 }

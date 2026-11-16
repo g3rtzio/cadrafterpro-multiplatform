@@ -1,11 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { SCALE_GROUPS, SCALE_UNITS, ScaleUnit, denominatorFor, isPresetScale } from '../../models/takeoff';
-import { DrawingStore } from '../../services/drawing.store';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 // Scale dialog (like Revu's "Page Scale" / "Apply Scale to Viewport"):
 // a preset from the list, or a custom "1 in = 8.333 ft" — port of ScaleSheet.swift
 @Component({
   selector: 'app-scale-dialog',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'dialog-backdrop', '(keydown.escape)': 'store.cancelScaleRequest()' },
   template: `
@@ -13,7 +15,7 @@ import { DrawingStore } from '../../services/drawing.store';
     <form class="dialog" (submit)="$event.preventDefault(); apply()">
       <h2>{{ s.scaleRequestTitle }}</h2>
       @if (s.scaleRequest?.pendingItemId) {
-        <p class="secondary"><span class="icon small">straighten</span> This page has no scale yet. Set it to start measuring.</p>
+        <p class="secondary"><app-icon class="icon small" name="straighten" /> This page has no scale yet. Set it to start measuring.</p>
       }
       @if (s.scaleRequestIsViewport) {
         <label class="field">Label <input [value]="name()" (input)="name.set(text($event))" /></label>

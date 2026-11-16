@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
-import { DrawingStore, OverlayState } from '../../services/drawing.store';
+import { DrawingStore, OverlayState } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'];
 
@@ -8,6 +9,7 @@ const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'
 // It floats in the top-right corner of the plan pane.
 @Component({
   selector: 'app-overlay-panel',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'overlay-panel',
@@ -39,9 +41,9 @@ const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'
     @let s = store.watch();
     @if (store.overlay(); as o) {
       <div class="head">
-        <span class="icon small">layers</span> Overlay Pages
+        <app-icon class="icon small" name="layers" /> Overlay Pages
         <span class="spacer"></span>
-        <button class="icon-button" title="Close Overlay" (click)="store.closeOverlay()"><span class="icon small">close</span></button>
+        <button class="icon-button" title="Close Overlay" (click)="store.closeOverlay()"><app-icon class="icon small" name="close" /></button>
       </div>
 
       <label class="row">Base
@@ -99,7 +101,7 @@ const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'
       <div class="buttons">
         <button [class.on]="o.adjusting" title="Drag on the plan (or use the arrow keys) to line up the page on top"
                 (click)="update({ adjusting: !o.adjusting })">
-          <span class="icon small">open_with</span> Move
+          <app-icon class="icon small" name="open_with" /> Move
         </button>
         <button title="Back to the original position" (click)="update({ dx: 0, dy: 0, scale: 1, rotation: 0 })">Reset</button>
         <button title="Swap the pages" (click)="swap(o)">Swap</button>

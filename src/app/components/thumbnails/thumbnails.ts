@@ -2,13 +2,14 @@ import {
   ChangeDetectionStrategy, Component, ElementRef, OnDestroy, afterNextRender, computed, effect, inject, input, signal,
   viewChild,
 } from '@angular/core';
-import { DrawingStore } from '../../services/drawing.store';
-import { renderRegion } from '../../services/pdf-render';
-import { pageShapes } from '../../services/shapes';
-import { PageLabeler } from '../../services/page-labels';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { renderRegion } from '../../services/pdf-render/pdf-render';
+import { pageShapes } from '../../services/shapes/shapes';
+import { PageLabeler } from '../../services/page-labels/page-labels';
 import { InsertPagesDialog } from '../insert-pages-dialog/insert-pages-dialog';
 import { PageLabelsDialog } from '../page-labels-dialog/page-labels-dialog';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
+import { Icon } from '../icon/icon';
 
 const THUMB_WIDTH = 180;
 const PAGE_DRAG_TYPE = 'application/x-cadrafter-pages';
@@ -87,7 +88,7 @@ export class PageThumb implements OnDestroy {
 // Click = go to the page, Ctrl/⌘ + click = add to the selection, Shift + click = a range.
 @Component({
   selector: 'app-thumbnails',
-  imports: [InsertPagesDialog, PageLabelsDialog, PageThumb],
+  imports: [Icon, InsertPagesDialog, PageLabelsDialog, PageThumb],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'thumbnails',
@@ -115,17 +116,17 @@ export class PageThumb implements OnDestroy {
     @let s = store.watch();
     <div class="page-tools">
       <button class="icon-button" title="Insert a blank page after this one" [disabled]="!s.hasDocument"
-              (click)="s.insertBlankPage(s.currentPageIndex + 1)"><span class="icon small">note_add</span></button>
+              (click)="s.insertBlankPage(s.currentPageIndex + 1)"><app-icon class="icon small" name="note_add" /></button>
       <button class="icon-button" title="Insert pages from another PDF…" [disabled]="!s.hasDocument"
-              (click)="pickFile(s.currentPageIndex + 1)"><span class="icon small">post_add</span></button>
+              (click)="pickFile(s.currentPageIndex + 1)"><app-icon class="icon small" name="post_add" /></button>
       <button class="icon-button" title="Move up" [disabled]="!canMove(-1)" (click)="moveBy(-1)">
-        <span class="icon small">arrow_upward</span></button>
+        <app-icon class="icon small" name="arrow_upward" /></button>
       <button class="icon-button" title="Move down" [disabled]="!canMove(1)" (click)="moveBy(1)">
-        <span class="icon small">arrow_downward</span></button>
+        <app-icon class="icon small" name="arrow_downward" /></button>
       <button class="icon-button" title="Delete the selected pages" [disabled]="s.pageCount < 2"
-              (click)="deleteSelected()"><span class="icon small">delete</span></button>
+              (click)="deleteSelected()"><app-icon class="icon small" name="delete" /></button>
       <button class="icon-button" title="Create Page Labels: name the pages from bookmarks or from a region"
-              [disabled]="!s.hasDocument" (click)="labeler.open()"><span class="icon small">label</span></button>
+              [disabled]="!s.hasDocument" (click)="labeler.open()"><app-icon class="icon small" name="label" /></button>
       <span class="count">{{ selectedList().length > 1 ? selectedList().length + ' of ' : '' }}{{ s.pageCount }} pages</span>
     </div>
 

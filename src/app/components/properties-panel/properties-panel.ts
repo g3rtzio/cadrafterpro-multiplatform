@@ -1,8 +1,8 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { Markup } from '../../models/elements';
-import { COLORS, LENGTH_UNITS, LINE_STYLES, LengthUnit, LineStyle } from '../../models/takeoff';
-import { DrawingStore } from '../../services/drawing.store';
-import { MarkupStyle, MarkupTools } from '../../services/markup-tools';
+import { AREA_UNITS, COLORS, LENGTH_UNITS, LINE_STYLES, LengthUnit, LineStyle, areaUnitName, lengthUnitName } from '../../models/takeoff';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { MarkupStyle, MarkupTools } from '../../services/markup-tools/markup-tools';
 
 // Settings panel of the right side bar: takeoff value, selection, appearance, caption,
 // markup text and arrows, the look of the active markup tool, and the document
@@ -17,6 +17,7 @@ import { MarkupStyle, MarkupTools } from '../../services/markup-tools';
     @let onlyMeasurements = measurements.length > 0 && measurements.length === s.selection.length;
     @let hasLines = hasKind(false);
     @let hasArea = hasKind(true);
+    @let hasLinear = hasLinearKind();
     @let marks = markups.selectedMarkups;
     @let first = marks[0];
     @let tool = markups.tool();
@@ -154,15 +155,26 @@ import { MarkupStyle, MarkupTools } from '../../services/markup-tools';
               }
             </div>
           </div>
-          <label class="check-field"><input type="checkbox" [checked]="s.measureArrows"
-                 (change)="s.measureArrows = checked($event)" /> Arrows on Both Ends</label>
+          @if (hasLinear) {
+            <label class="check-field"><input type="checkbox" [checked]="s.measureArrows"
+                   (change)="s.measureArrows = checked($event)" /> Arrows on Both Ends</label>
+          }
         }
-        <!-- Unit of the measurement text (lengths and areas) -->
-        @if (hasLines || hasArea) {
+        <!-- Unit of the measurement text: lengths in length units, areas in area units -->
+        @if (hasLinear) {
           <label class="field">Length Unit
             <select (change)="setUnit($event)">
               @for (u of lengthUnits; track u) {
-                <option [value]="u" [selected]="s.measureLengthUnit === u">{{ u }}</option>
+                <option [value]="u" [selected]="s.measureLengthUnit === u">{{ lengthName(u) }}</option>
+              }
+            </select>
+          </label>
+        }
+        @if (hasArea) {
+          <label class="field">Area Unit
+            <select (change)="setAreaUnit($event)">
+              @for (u of areaUnits; track u) {
+                <option [value]="u" [selected]="s.measureAreaUnit === u">{{ areaName(u) }}</option>
               }
             </select>
           </label>
@@ -288,6 +300,12 @@ export class PropertiesPanel {
   readonly fonts = ['System', 'Helvetica', 'Arial', 'Menlo', 'Times New Roman'];
   readonly lineStyles = LINE_STYLES;
   readonly lengthUnits = LENGTH_UNITS;
+  readonly areaUnits = AREA_UNITS;
+
+  // Lengths and segments (not areas or counts) are selected
+  hasLinearKind(): boolean {
+    return this.store.selectedMeasurements.some(m => m.kind === 'length' || m.kind === 'segment');
+  }
 
   hasKind(area: boolean): boolean {
     return this.store.selectedMeasurements.some(m => area ? m.kind === 'area' : m.kind !== 'count');
@@ -300,6 +318,9 @@ export class PropertiesPanel {
 
   setStyle(style: LineStyle): void { this.store.measureLineStyle = style; }
   setUnit(e: Event): void { this.store.measureLengthUnit = this.value(e) as LengthUnit; }
+  setAreaUnit(e: Event): void { this.store.measureAreaUnit = this.value(e) as LengthUnit; }
+  lengthName(u: LengthUnit): string { return lengthUnitName(u); }
+  areaName(u: LengthUnit): string { return areaUnitName(u); }
 
   // MARK: - Markups
   toolStyle(): MarkupStyle {

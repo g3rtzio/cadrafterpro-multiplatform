@@ -1,7 +1,8 @@
 import { ChangeDetectionStrategy, Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { COLORS } from '../../models/takeoff';
-import { DrawingStore } from '../../services/drawing.store';
-import { SearchHit, TextSearch } from '../../services/text-search';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { SearchHit, TextSearch } from '../../services/text-search/text-search';
+import { Icon } from '../icon/icon';
 
 // Search panel of the right side bar (like Revu's Search): text box, where to search,
 // options, and the results grouped by page. Click a result to zoom to it on the plan.
@@ -9,6 +10,7 @@ import { SearchHit, TextSearch } from '../../services/text-search';
 // mark for redaction, hyperlink, or put a count of an element on each one.
 @Component({
   selector: 'app-search-panel',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'properties search-panel', '(document:click)': 'menuOpen.set(false)' },
   template: `
@@ -17,12 +19,12 @@ import { SearchHit, TextSearch } from '../../services/text-search';
       <h3>Search</h3>
       <div class="search-row">
         <div class="search-box">
-          <span class="icon small secondary">search</span>
+          <app-icon class="icon small secondary" name="search" />
           <input #field type="text" placeholder="Find text" [value]="search.query()" [disabled]="!s.hasDocument"
                  (input)="search.query.set(value($event))" (keydown.enter)="onEnter($event)"
                  (keydown.escape)="clear()" />
           @if (search.query()) {
-            <button class="icon-button" title="Clear" (click)="clear()"><span class="icon small">close</span></button>
+            <button class="icon-button" title="Clear" (click)="clear()"><app-icon class="icon small" name="close" /></button>
           }
         </div>
         <button class="primary" [disabled]="!s.hasDocument || !search.query().trim()" (click)="search.search()">Search</button>
@@ -38,7 +40,7 @@ import { SearchHit, TextSearch } from '../../services/text-search';
     <!-- Options -->
     <section class="panel-section">
       <button class="section-toggle" (click)="showOptions.set(!showOptions())">
-        <span class="icon small">{{ showOptions() ? 'expand_more' : 'chevron_right' }}</span> Options
+        <app-icon class="icon small" [name]="showOptions() ? 'expand_more' : 'chevron_right'" /> Options
       </button>
       @if (showOptions()) {
         <label class="check-field"><input type="checkbox" [checked]="search.searchText()"
@@ -59,8 +61,8 @@ import { SearchHit, TextSearch } from '../../services/text-search';
         <span class="spacer"></span>
         @if (search.results().length) {
           <span class="secondary small">{{ position() }}</span>
-          <button class="icon-button" title="Previous Result (⇧Enter)" (click)="search.step(-1)"><span class="icon small">keyboard_arrow_up</span></button>
-          <button class="icon-button" title="Next Result (Enter)" (click)="search.step(1)"><span class="icon small">keyboard_arrow_down</span></button>
+          <button class="icon-button" title="Previous Result (⇧Enter)" (click)="search.step(-1)"><app-icon class="icon small" name="keyboard_arrow_up" /></button>
+          <button class="icon-button" title="Next Result (Enter)" (click)="search.step(1)"><app-icon class="icon small" name="keyboard_arrow_down" /></button>
         }
       </div>
       @if (search.busy()) {
@@ -77,23 +79,23 @@ import { SearchHit, TextSearch } from '../../services/text-search';
           <div class="menu-anchor">
             <button class="icon-button" title="Actions on the checked results" [disabled]="!ticked"
                     (click)="$event.stopPropagation(); menuOpen.set(!menuOpen()); panel.set(null)">
-              <span class="icon small">bolt</span><span class="icon small">expand_more</span>
+              <app-icon class="icon small" name="bolt" /><app-icon class="icon small" name="expand_more" />
             </button>
             @if (menuOpen()) {
               <div class="menu actions-menu" (click)="$event.stopPropagation()">
-                <button class="menu-item" (click)="openPanel('link')"><span class="icon small">link</span> Hyperlink Checked…</button>
-                <button class="menu-item" (click)="mark('Redact')"><span class="icon small">ink_eraser</span> Mark for Redaction</button>
-                <button class="menu-item" (click)="openPanel('count')"><span class="icon small">tally_mark_4</span> Apply Count Measurement to Checked…</button>
+                <button class="menu-item" (click)="openPanel('link')"><app-icon class="icon small" name="link" /> Hyperlink Checked…</button>
+                <button class="menu-item" (click)="mark('Redact')"><app-icon class="icon small" name="ink_eraser" /> Mark for Redaction</button>
+                <button class="menu-item" (click)="openPanel('count')"><app-icon class="icon small" name="tally_mark_4" /> Apply Count Measurement to Checked…</button>
                 <div class="menu-divider"></div>
-                <button class="menu-item" (click)="mark('Highlight')"><span class="icon small">ink_highlighter</span> Highlight Checked</button>
-                <button class="menu-item" (click)="mark('Underline')"><span class="icon small">format_underlined</span> Underline Checked</button>
-                <button class="menu-item" (click)="mark('Squiggly')"><span class="icon small">format_underlined_squiggle</span> Squiggly Checked</button>
-                <button class="menu-item" (click)="mark('StrikeOut')"><span class="icon small">strikethrough_s</span> Strikethrough Checked</button>
+                <button class="menu-item" (click)="mark('Highlight')"><app-icon class="icon small" name="ink_highlighter" /> Highlight Checked</button>
+                <button class="menu-item" (click)="mark('Underline')"><app-icon class="icon small" name="format_underlined" /> Underline Checked</button>
+                <button class="menu-item" (click)="mark('Squiggly')"><app-icon class="icon small" name="format_underlined_squiggle" /> Squiggly Checked</button>
+                <button class="menu-item" (click)="mark('StrikeOut')"><app-icon class="icon small" name="strikethrough_s" /> Strikethrough Checked</button>
               </div>
             }
           </div>
           <button class="icon-button" title="Remove the checked results from the list" [disabled]="!ticked" (click)="search.removeChecked()">
-            <span class="icon small">delete</span>
+            <app-icon class="icon small" name="delete" />
           </button>
         </div>
 
@@ -102,7 +104,7 @@ import { SearchHit, TextSearch } from '../../services/text-search';
           <div class="action-box">
             <div class="action-title">Apply Count to {{ ticked }} result{{ ticked === 1 ? '' : 's' }}</div>
             <div class="search-box">
-              <span class="icon small secondary">search</span>
+              <app-icon class="icon small secondary" name="search" />
               <input type="text" placeholder="Find element" [value]="countFilter()" (input)="countFilter.set(value($event))" />
             </div>
             <div class="picker-header">New count</div>
@@ -159,7 +161,7 @@ import { SearchHit, TextSearch } from '../../services/text-search';
           <div class="result-row" [class.current]="search.focused() === hit">
             <input type="checkbox" [checked]="search.isChecked(hit)" (change)="search.toggle(hit)" />
             <button class="result-text" (click)="search.focus(hit)">
-              @if (hit.source === 'markup') { <span class="icon small secondary">sticky_note_2</span> }
+              @if (hit.source === 'markup') { <app-icon class="icon small secondary" name="sticky_note_2" /> }
               <span class="snippet">{{ hit.before }}<mark>{{ hit.match }}</mark>{{ hit.after }}</span>
             </button>
           </div>

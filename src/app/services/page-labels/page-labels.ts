@@ -1,9 +1,9 @@
 import { Injectable, inject, signal } from '@angular/core';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { Rect } from '../models/takeoff';
-import { DrawingStore } from './drawing.store';
-import { OcrService } from './ocr';
-import { PageGeometry } from './pdf-render';
+import { Rect } from '../../models/takeoff';
+import { DrawingStore } from '../drawing.store/drawing.store';
+import { OcrService } from '../ocr/ocr';
+import { PageGeometry } from '../pdf-render/pdf-render';
 
 // Create Page Labels (like Revu's Thumbnails › Create Page Labels): names every page from
 // the PDF bookmarks, or from the text inside a box (the sheet number in the title block),

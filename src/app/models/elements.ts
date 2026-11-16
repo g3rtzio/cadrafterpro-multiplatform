@@ -146,6 +146,34 @@ export class Markup {
 
   get bounds(): Rect { return this.rect; }
 
+  // Markup type shown in the estimate ("Highlight", "Cloud", "Callout"…); null for Revu measurements,
+  // which are areas, lengths or counts
+  get markupType(): string | null {
+    if (this.isRevuMeasurement) return null;
+    const known = ['Cloud+', 'Cloud', 'Callout', 'Text Box', 'Snapshot', 'Arrow', 'Highlight', 'Pen', 'Rectangle',
+      'Ellipse', 'Line', 'Polyline', 'Polygon', 'Underline', 'Squiggly', 'Strikethrough', 'Redaction', 'Hyperlink'];
+    const subject = known.find(k => k.toLowerCase() === this.subject.trim().toLowerCase());
+    if (subject) return subject;
+    switch (this.subtype) {
+      case 'FreeText':
+        if (/callout/i.test(this.intent) || this.callout) return 'Callout';
+        return /typewriter/i.test(this.intent) ? 'Typewriter' : 'Text Box';
+      case 'Polygon': return this.cloud > 0 || /cloud/i.test(this.intent) ? 'Cloud' : 'Polygon';
+      case 'PolyLine': return 'Polyline';
+      case 'Line': return this.lineEnds?.some(e => e !== 'None') ? 'Arrow' : 'Line';
+      case 'Square': return 'Rectangle';
+      case 'Circle': return 'Ellipse';
+      case 'Ink': return this.isHighlight ? 'Highlight' : 'Pen';
+      case 'Stamp': return this.imageUrl || /snapshot/i.test(this.subject) ? 'Snapshot' : 'Stamp';
+      case 'StrikeOut': return 'Strikethrough';
+      case 'Redact': return 'Redaction';
+      case 'Link': return 'Hyperlink';
+      case 'Text': return 'Note';
+      case 'Annotation': return null;
+      default: return this.subtype;
+    }
+  }
+
   // Text area of a text box or a callout
   get textRect(): Rect { return this.textBox ?? this.rect; }
 
@@ -247,6 +275,24 @@ export function arrowHead(from: Pt, tip: Pt, length: number): Pt[] {
     { x: tip.x - length * Math.cos(angle - spread), y: tip.y - length * Math.sin(angle - spread) },
     { x: tip.x - length * Math.cos(angle + spread), y: tip.y - length * Math.sin(angle + spread) },
   ];
+}
+
+// Direction of the segment in the middle of a polyline, in radians, turned so text along it
+// reads left to right (never upside down)
+export function readableAngleAtHalfLength(pts: Pt[], yDown: boolean): number {
+  if (pts.length < 2) return 0;
+  const lengths = pts.slice(1).map((b, i) => Math.hypot(b.x - pts[i].x, b.y - pts[i].y));
+  let remaining = lengths.reduce((a, b) => a + b, 0) / 2;
+  let i = 0;
+  while (i < lengths.length - 1 && remaining > lengths[i]) { remaining -= lengths[i]; i++; }
+  const a = pts[i], b = pts[i + 1];
+  let angle = Math.atan2(b.y - a.y, b.x - a.x);
+  // Keep it within ±90°; a vertical line reads bottom to top (like the dimensions on drawings)
+  const limit = Math.PI / 2 - 1e-6;
+  if (angle > limit) angle -= Math.PI;
+  if (angle < -limit) angle += Math.PI;
+  if (Math.abs(Math.abs(angle) - Math.PI / 2) < 1e-3) angle = yDown ? -Math.PI / 2 : Math.PI / 2;
+  return angle;
 }
 
 // Walks half of the total length along a polyline

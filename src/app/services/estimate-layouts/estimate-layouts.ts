@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { EstimateLayout, newId, starterLayouts } from '../models/templates';
-import { DrawingStore } from './drawing.store';
+import { EstimateLayout, newId, starterLayouts } from '../../models/templates';
+import { DrawingStore } from '../drawing.store/drawing.store';
 
 const STORAGE_KEY = 'estimateLayouts';
 

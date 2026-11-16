@@ -1,10 +1,12 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { Part, PropertyDef, evaluate, findProp, partTemplate } from '../models/estimate';
-import { TakeoffKind, kindTitle } from '../models/takeoff';
+import { Part, PropertyDef, evaluate, findProp, partTemplate } from '../../models/estimate';
+import { TakeoffKind, kindTitle } from '../../models/takeoff';
 import {
-  TakeoffTemplate, TemplateFolder, TemplateLibraryData, TemplatePart, newId, setFormula, starterLibrary, templateProps,
-} from '../models/templates';
-import { DrawingStore } from './drawing.store';
+  PART_COLOR, TakeoffTemplate, TemplateFolder, TemplateLibraryData, TemplatePart, newId, setFormula, starterLibrary,
+  templateProps,
+} from '../../models/templates';
+import { Measurement } from '../../models/elements';
+import { DrawingStore } from '../drawing.store/drawing.store';
 
 const STORAGE_KEY = 'templateLibrary';
 
@@ -128,6 +130,42 @@ export class TemplateLibrary {
     this.changed();
   }
 
+  // New part template: a part (with sub-parts if wanted) to add under any item of an estimate
+  newPartTemplate(): void {
+    const folderId = this.targetFolderId;
+    const used = new Set(this.data.templates.map(t => t.name));
+    let n = 1;
+    while (used.has(`New Part ${n}`)) n++;
+    const name = `New Part ${n}`;
+    const template: TakeoffTemplate = {
+      id: newId('tpl'), folderId, name, kind: 'count', color: PART_COLOR, props: partTemplate(name), parts: [], isPart: true,
+    };
+    this.data.templates.push(template);
+    if (folderId) this.collapsed.delete(folderId);
+    this.selection = { type: 'template', id: template.id };
+    this.changed();
+  }
+
+  // The selected part of a template (with the parts below it) saved as its own part template
+  savePartAsTemplate(): void {
+    const t = this.selectedTemplate, part = this.selectedPart;
+    if (!t || !part) return;
+    const below = [...descendants(t.parts, part.id)].filter(id => id !== part.id);
+    const ids = new Map(below.map(id => [id, newId('tpart')]));
+    const name = this.partName(part);
+    const template: TakeoffTemplate = {
+      id: newId('tpl'), folderId: t.folderId, name, kind: 'count', color: PART_COLOR, props: structuredClone(part.props),
+      parts: t.parts.filter(p => ids.has(p.id)).map(p => ({
+        id: ids.get(p.id)!, parentId: p.parentId && ids.has(p.parentId) ? ids.get(p.parentId)! : null, props: structuredClone(p.props),
+      })),
+      isPart: true,
+    };
+    this.data.templates.push(template);
+    this.selection = { type: 'template', id: template.id };
+    this.changed();
+    this.store.showToast(`Saved "${name}" as a part template`);
+  }
+
   // Name, type and color of a template (the Name property follows the name)
   updateTemplate(id: string, change: Partial<Pick<TakeoffTemplate, 'name' | 'kind' | 'color'>>): void {
     const t = this.template(id);
@@ -138,7 +176,7 @@ export class TemplateLibrary {
       t.name = name;
       setFormula(t.props, 'Name', name);
     }
-    if (change.kind && change.kind !== t.kind) {
+    if (change.kind && change.kind !== t.kind && !t.isPart) {
       // A new type brings the Qty formula and units of that type; the other properties stay
       const fresh = templateProps(change.kind, t.name);
       for (const name of ['Qty', 'Type']) {
@@ -246,6 +284,10 @@ export class TemplateLibrary {
       s.showToast('Open a drawing first', true);
       return;
     }
+    if (t.isPart) {
+      this.addPartToDocument(t);
+      return;
+    }
     s.showTab('Home');
     // Already in the document: continue measuring with it
     const existing = s.items.find(i => i.name === t.name && i.kind === t.kind);
@@ -270,6 +312,37 @@ export class TemplateLibrary {
     s.estimateChanged();
     s.addItem(t.name, t.kind, t.color);
     s.showToast(`Measuring with "${t.name}"`);
+  }
+
+  // Item a part template goes under: the row selected in the estimate, or the item of the
+  // measurement selected on the plan (null = none selected)
+  partTarget(): string | null {
+    const s = this.store;
+    if (s.canAddSubItem) return s.selectedEstimateKey;   // an element or part row (not a group)
+    const m = s.selection.find((el): el is Measurement => el instanceof Measurement);
+    const item = m ? s.items.find(i => i.id === m.itemId) : undefined;
+    return item?.name ?? null;
+  }
+
+  // Adds a part template (with its sub-parts) under the selected item of the estimate (one Undo step)
+  addPartToDocument(t: TakeoffTemplate, parentKey: string | null = this.partTarget()): void {
+    const s = this.store;
+    if (!parentKey) {
+      s.showToast('Select an item in the estimate or on the plan first', true);
+      return;
+    }
+    s.checkpoint();
+    const props = structuredClone(t.props);
+    setFormula(props, 'Name', t.name);
+    const top: Part = { id: `part-${newId('t')}`, parentKey, props };
+    const ids = new Map(t.parts.map(p => [p.id, `part-${newId('t')}`]));
+    s.estimate.parts.push(top, ...t.parts.map(p => ({
+      id: ids.get(p.id)!, parentKey: p.parentId ? ids.get(p.parentId) ?? top.id : top.id, props: structuredClone(p.props),
+    })));
+    s.estimateCollapsed.delete(`${s.isPart(parentKey) ? 'part' : 'element'}-${parentKey}`);
+    s.estimateChanged();
+    const parentName = s.isPart(parentKey) ? s.partName(s.estimate.parts.find(p => p.id === parentKey)!) : parentKey;
+    s.showToast(`Added "${t.name}" to "${parentName}"`);
   }
 
   // MARK: - Save an element of the document as a template (with its properties and parts)

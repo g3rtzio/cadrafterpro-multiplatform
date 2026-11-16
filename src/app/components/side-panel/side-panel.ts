@@ -1,16 +1,19 @@
 import { ChangeDetectionStrategy, Component, model, signal, viewChild } from '@angular/core';
+import { AiPanel } from '../ai-panel/ai-panel';
 import { PropertiesPanel } from '../properties-panel/properties-panel';
 import { ScalePanel } from '../scale-panel/scale-panel';
 import { SearchPanel } from '../search-panel/search-panel';
+import { TemplatesPanel } from '../templates-panel/templates-panel';
+import { Icon } from '../icon/icon';
 
-export type SidePanelTab = 'settings' | 'search' | 'scale';
+export type SidePanelTab = 'settings' | 'search' | 'scale' | 'templates' | 'ai';
 
-// Right side bar like Bluebeam Revu: a column of icons on the edge (Settings, Search, Scale)
+// Right side bar like Bluebeam Revu: a column of icons on the edge (Settings, Search, Scale, Templates, AI)
 // and the panel of the chosen one. Clicking the open panel's icon again hides the panel.
 // ⌘F / Ctrl+F opens Search.
 @Component({
   selector: 'app-side-panel',
-  imports: [PropertiesPanel, ScalePanel, SearchPanel],
+  imports: [Icon, AiPanel, PropertiesPanel, ScalePanel, SearchPanel, TemplatesPanel],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'side-panel', '(document:keydown)': 'onKey($event)' },
   template: `
@@ -22,6 +25,8 @@ export type SidePanelTab = 'settings' | 'search' | 'scale';
             @case ('settings') { <app-properties-panel /> }
             @case ('search') { <app-search-panel /> }
             @case ('scale') { <app-scale-panel /> }
+            @case ('templates') { <app-templates-panel /> }
+            @case ('ai') { <app-ai-panel /> }
           }
         </div>
       </aside>
@@ -29,7 +34,7 @@ export type SidePanelTab = 'settings' | 'search' | 'scale';
     <nav class="side-strip">
       @for (b of buttons; track b.tab) {
         <button class="strip-button" [class.active]="open() && tab() === b.tab" [title]="b.title" (click)="toggle(b.tab)">
-          <span class="icon">{{ b.icon }}</span>
+          <app-icon class="icon" [name]="b.icon" />
         </button>
       }
     </nav>
@@ -60,11 +65,13 @@ export class SidePanel {
   readonly tab = signal<SidePanelTab>('settings');
   private readonly searchPanel = viewChild(SearchPanel);
 
-  readonly titles: Record<SidePanelTab, string> = { settings: 'Properties', search: 'Search', scale: 'Scale' };
+  readonly titles: Record<SidePanelTab, string> = { settings: 'Properties', search: 'Search', scale: 'Scale', templates: 'Templates', ai: 'AI Assistant' };
   readonly buttons: { tab: SidePanelTab; icon: string; title: string }[] = [
     { tab: 'settings', icon: 'settings', title: 'Settings (Properties)' },
     { tab: 'search', icon: 'search', title: 'Search (⌘F)' },
     { tab: 'scale', icon: 'straighten', title: 'Scale' },
+    { tab: 'templates', icon: 'library_books', title: 'Templates' },
+    { tab: 'ai', icon: 'auto_awesome', title: 'AI Assistant' },
   ];
 
   toggle(tab: SidePanelTab): void {

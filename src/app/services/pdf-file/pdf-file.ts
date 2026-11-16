@@ -3,9 +3,9 @@ import {
   PDFRef, PDFStream, PDFString, StandardFonts,
 } from 'pdf-lib';
 import {
-  Cubic, LINE_HEIGHT, Markup, Measurement, TEXT_PADDING, cloudCurves, ellipseCurves, lineEnding, randomName, wrapText,
-} from '../models/elements';
-import { Pt, Rect, ScaleViewport, boundsOf, dashPattern, uid } from '../models/takeoff';
+  Cubic, LINE_HEIGHT, Markup, Measurement, TEXT_PADDING, cloudCurves, readableAngleAtHalfLength, ellipseCurves, lineEnding, randomName, wrapText,
+} from '../../models/elements';
+import { Pt, Rect, ScaleViewport, boundsOf, dashPattern, uid } from '../../models/takeoff';
 
 // Reads and writes the PDF file with pdf-lib (port of the PDFKit parts of DrawingViewModel,
 // MeasurementAnnotation.applyBluebeamProperties and RevuPageScale.swift).
@@ -544,11 +544,23 @@ function appearance(lib: PDFDocument, font: PDFFont, m: Measurement): { ref: PDF
     if (text) {
       const width = font.widthOfTextAtSize(m.contents, size);
       const gap = m.lineWidth + 2;
-      const x = m.kind === 'count' ? anchor.x : anchor.x - width / 2;
-      const y = m.kind === 'length' || m.kind === 'segment' ? anchor.y + gap + size * 0.25 : anchor.y - size * 0.35;
       const [tr, tg, tb] = rgb(m.captionTextColor).map(num);
-      ops.push('q /GS0 gs BT', `/Helv ${num(size)} Tf ${tr} ${tg} ${tb} rg ${num(x)} ${num(y)} Td ${text} Tj`, 'ET Q');
-      bbox = union(bbox, { x, y: y - size * 0.3, w: width, h: size * 1.3 });
+      if (m.kind === 'length' || m.kind === 'segment') {
+        // Along the line, above its middle, never upside down (page coordinates: y up)
+        const angle = readableAngleAtHalfLength(m.points, false);
+        const c = Math.cos(angle), s = Math.sin(angle);
+        const up = gap + size * 0.25;
+        const x = anchor.x - c * width / 2 - s * up;
+        const y = anchor.y - s * width / 2 + c * up;
+        ops.push('q /GS0 gs BT', `/Helv ${num(size)} Tf ${tr} ${tg} ${tb} rg ${num(c)} ${num(s)} ${num(-s)} ${num(c)} ${num(x)} ${num(y)} Tm ${text} Tj`, 'ET Q');
+        const at = (u: number, v: number) => ({ x: x + c * u - s * v, y: y + s * u + c * v });
+        bbox = union(bbox, boundsOf([at(0, -size * 0.3), at(width, -size * 0.3), at(0, size), at(width, size)]));
+      } else {
+        const x = m.kind === 'count' ? anchor.x : anchor.x - width / 2;
+        const y = anchor.y - size * 0.35;
+        ops.push('q /GS0 gs BT', `/Helv ${num(size)} Tf ${tr} ${tg} ${tb} rg ${num(x)} ${num(y)} Td ${text} Tj`, 'ET Q');
+        bbox = union(bbox, { x, y: y - size * 0.3, w: width, h: size * 1.3 });
+      }
     }
   }
 

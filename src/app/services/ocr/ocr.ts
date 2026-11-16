@@ -5,9 +5,9 @@ import {
   setTextMatrix, setTextRenderingMode, showText,
 } from 'pdf-lib';
 import type { Worker as TesseractWorker } from 'tesseract.js';
-import { Pt, Rect } from '../models/takeoff';
-import { DrawingStore } from './drawing.store';
-import { PageGeometry, renderRegion } from './pdf-render';
+import { Pt, Rect } from '../../models/takeoff';
+import { DrawingStore } from '../drawing.store/drawing.store';
+import { PageGeometry, renderRegion } from '../pdf-render/pdf-render';
 
 // OCR (text recognition) of plan pages, done in the browser with Tesseract.js.
 // Construction drawings often have their text as vector lines (AutoCAD SHX fonts) or as a scan,

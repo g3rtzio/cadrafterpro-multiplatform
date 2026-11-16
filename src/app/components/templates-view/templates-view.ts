@@ -3,17 +3,19 @@ import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@a
 import { PROPERTY_GROUPS, PropertyDef, evaluate, formatResult } from '../../models/estimate';
 import { TAKEOFF_KINDS, TakeoffKind, kindIcon, kindTitle } from '../../models/takeoff';
 import { TakeoffTemplate, TemplatePart } from '../../models/templates';
-import { DrawingStore } from '../../services/drawing.store';
-import { TemplateLibrary } from '../../services/template-library';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { TemplateLibrary } from '../../services/template-library/template-library';
 import { AutoFocus } from '../auto-focus/auto-focus';
+import { Icon } from '../icon/icon';
 
 // "Templates" tab (PlanSwift style): the template library on the left (folders, templates and
 // their parts) and the selected template or part on the right, with its properties.
-// Double-click a template (or press Use Template) to measure with it on the plan.
+// Double-click a template (or press Use Template) to measure with it on the plan; a part template
+// is added under the item selected in the estimate or on the plan.
 // Drag templates and folders onto a folder to move them, or onto the empty area for the top level.
 @Component({
   selector: 'app-templates-view',
-  imports: [AutoFocus, NgTemplateOutlet],
+  imports: [Icon, AutoFocus, NgTemplateOutlet],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'templates-view',
@@ -39,25 +41,40 @@ import { AutoFocus } from '../auto-focus/auto-focus';
       @let part = lib.selectedPart;
       @if (t) {
         <div class="templates-detail-header">
-          <span class="icon" [style.color]="t.color">{{ icon(t.kind) }}</span>
+          <app-icon class="icon" [style.color]="t.color" [name]="t.isPart ? 'widgets' : icon(t.kind)" />
           <h2>{{ part ? lib.partName(part) : t.name }}</h2>
           @if (part) { <span class="secondary">Part of {{ t.name }}</span> }
+          @if (t.isPart && !part) { <span class="secondary">Part template</span> }
           <span class="spacer"></span>
-          <button class="primary" [disabled]="!store.watch().hasDocument" title="Measure with this template on the plan"
-                  (click)="lib.useTemplate(t.id)">
-            <span class="icon small">play_arrow</span> Use Template
-          </button>
+          @if (part) {
+            <button title="Save this part (and the parts below it) as its own part template" (click)="lib.savePartAsTemplate()">
+              <app-icon class="icon small" name="widgets" /> Save as Part Template
+            </button>
+          }
+          @if (t.isPart) {
+            <button class="primary" [disabled]="!store.watch().hasDocument"
+                    title="Add this part under the item selected in the estimate or on the plan" (click)="lib.useTemplate(t.id)">
+              <app-icon class="icon small" name="add_box" /> Add to Selected Item
+            </button>
+          } @else {
+            <button class="primary" [disabled]="!store.watch().hasDocument" title="Measure with this template on the plan"
+                    (click)="lib.useTemplate(t.id)">
+              <app-icon class="icon small" name="play_arrow" /> Use Template
+            </button>
+          }
         </div>
         @if (!part) {
           <div class="templates-fields">
             <label>Name <input [value]="t.name" (change)="lib.updateTemplate(t.id, { name: value($event) })" /></label>
+            @if (!t.isPart) {
             <label>Type
               <select (change)="lib.updateTemplate(t.id, { kind: $any(value($event)) })">
                 @for (k of kinds; track k) { <option [value]="k" [selected]="t.kind === k">{{ title(k) }}</option> }
               </select>
             </label>
             <label>Color <input type="color" [value]="t.color" (change)="lib.updateTemplate(t.id, { color: value($event) })" /></label>
-            <span class="secondary small">{{ t.parts.length }} {{ t.parts.length === 1 ? 'part' : 'parts' }}</span>
+            }
+            <span class="secondary small">{{ t.parts.length }} {{ t.parts.length === 1 ? (t.isPart ? 'sub-part' : 'part') : (t.isPart ? 'sub-parts' : 'parts') }}</span>
           </div>
         }
         <div class="props-scroll templates-props">
@@ -91,9 +108,9 @@ import { AutoFocus } from '../auto-focus/auto-focus';
         </p>
       } @else {
         <div class="estimate-empty">
-          <span class="icon big">inventory_2</span>
+          <app-icon class="icon big" name="inventory_2" />
           <div class="estimate-empty-title">No Template Selected</div>
-          <div class="secondary">Select a template to see its properties, or double-click it to measure with it.</div>
+          <div class="secondary">Select a template to see its properties, or double-click it to measure with it. Part templates are added under the selected item of the estimate.</div>
         </div>
       }
     </section>
@@ -107,9 +124,9 @@ import { AutoFocus } from '../auto-focus/auto-focus';
              (click)="lib.select({ type: 'folder', id: f.id }); $event.stopPropagation()"
              (dblclick)="lib.renaming = f.id; lib.select({ type: 'folder', id: f.id })">
           <button class="disclosure" (click)="lib.toggle(f.id); $event.stopPropagation()">
-            <span class="icon small">{{ lib.collapsed.has(f.id) ? 'chevron_right' : 'expand_more' }}</span>
+            <app-icon class="icon small" [name]="lib.collapsed.has(f.id) ? 'chevron_right' : 'expand_more'" />
           </button>
-          <span class="icon small" style="color: #ffcc00">folder</span>
+          <app-icon class="icon small" style="color: #ffcc00" name="folder" />
           @if (lib.renaming === f.id) {
             <input class="rename" [value]="f.name" appAutoFocus (click)="$event.stopPropagation()" (dblclick)="$event.stopPropagation()"
                    (keydown.enter)="renameFolder(f.id, $event)" (keydown.escape)="lib.renameFolder(f.id, f.name)"
@@ -127,12 +144,13 @@ import { AutoFocus } from '../auto-focus/auto-focus';
         <div class="tree-row" [class.selected]="isSelected('template', t.id)" [style.padding-left.px]="4 + depth * 16"
              draggable="true" (dragstart)="dragStart($event, 'template', t.id)"
              (click)="lib.select({ type: 'template', id: t.id }); $event.stopPropagation()"
-             (dblclick)="lib.useTemplate(t.id)" title="Double-click to measure with it">
+             (dblclick)="lib.useTemplate(t.id)"
+             [title]="t.isPart ? 'Part template: double-click to add it to the selected item of the estimate' : 'Double-click to measure with it'">
           <button class="disclosure" [style.visibility]="t.parts.length ? 'visible' : 'hidden'"
                   (click)="lib.toggle(t.id); $event.stopPropagation()">
-            <span class="icon small">{{ lib.collapsed.has(t.id) ? 'chevron_right' : 'expand_more' }}</span>
+            <app-icon class="icon small" [name]="lib.collapsed.has(t.id) ? 'chevron_right' : 'expand_more'" />
           </button>
-          <span class="icon small" [style.color]="t.color">{{ icon(t.kind) }}</span>
+          <app-icon class="icon small" [style.color]="t.color" [name]="t.isPart ? 'widgets' : icon(t.kind)" />
           <span class="name">{{ t.name }}</span>
         </div>
         @if (!lib.collapsed.has(t.id)) {
@@ -148,9 +166,9 @@ import { AutoFocus } from '../auto-focus/auto-focus';
              (click)="lib.select({ type: 'part', templateId: t.id, id: p.id }); $event.stopPropagation()">
           <button class="disclosure" [style.visibility]="parts(t, p.id).length ? 'visible' : 'hidden'"
                   (click)="lib.toggle(p.id); $event.stopPropagation()">
-            <span class="icon small">{{ lib.collapsed.has(p.id) ? 'chevron_right' : 'expand_more' }}</span>
+            <app-icon class="icon small" [name]="lib.collapsed.has(p.id) ? 'chevron_right' : 'expand_more'" />
           </button>
-          <span class="icon small" style="color: #ff9500">widgets</span>
+          <app-icon class="icon small" style="color: #ff9500" name="widgets" />
           <span class="name">{{ lib.partName(p) }}</span>
         </div>
         @if (!lib.collapsed.has(p.id)) {

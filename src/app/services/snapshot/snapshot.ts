@@ -1,7 +1,7 @@
-import { Rect } from '../models/takeoff';
-import { DrawingStore, SnapshotClip } from './drawing.store';
-import { PageGeometry, renderRegion } from './pdf-render';
-import { Shape, pageShapes } from './shapes';
+import { Rect } from '../../models/takeoff';
+import { DrawingStore, SnapshotClip } from '../drawing.store/drawing.store';
+import { PageGeometry, renderRegion } from '../pdf-render/pdf-render';
+import { Shape, pageShapes } from '../shapes/shapes';
 
 // Snapshot tool: copies a region of a page as a picture (the drawing plus the markups and
 // measurements on top), like Revu's Snapshot. Port has no Mac counterpart.

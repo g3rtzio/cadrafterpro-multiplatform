@@ -1,11 +1,13 @@
-import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
-import { SCALE_GROUPS, isPresetScale, scaleName } from '../../models/takeoff';
-import { DrawingStore } from '../../services/drawing.store';
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { AREA_UNITS, LENGTH_UNITS, LengthUnit, SCALE_GROUPS, areaUnitName, isPresetScale, lengthUnitName, scaleName } from '../../models/takeoff';
+import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 // Scale panel of the right side bar (like Revu's Measurements › Scale):
 // page scale, viewports of the current page and the scale of every page
 @Component({
   selector: 'app-scale-panel',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'properties' },
   template: `
@@ -47,7 +49,7 @@ import { DrawingStore } from '../../services/drawing.store';
           </div>
           <span class="spacer"></span>
           <button (click)="s.editViewport(v.id)">Edit</button>
-          <button class="icon-button" title="Delete Viewport" (click)="s.deleteViewport(v.id)"><span class="icon small">delete</span></button>
+          <button class="icon-button" title="Delete Viewport" (click)="s.deleteViewport(v.id)"><app-icon class="icon small" name="delete" /></button>
         </div>
       } @empty {
         <div class="secondary">No viewports on this page</div>
@@ -59,9 +61,33 @@ import { DrawingStore } from '../../services/drawing.store';
           <button (click)="s.cancelViewport()">Cancel</button>
         </div>
       } @else {
-        <button [disabled]="!s.hasDocument" (click)="s.startViewport()"><span class="icon small">add</span> Add Viewport</button>
+        <button [disabled]="!s.hasDocument" (click)="s.startViewport()"><app-icon class="icon small" name="add" /> Add Viewport</button>
       }
       <p class="secondary small">Measurements inside a viewport use its scale instead of the page scale.</p>
+    </section>
+
+    <!-- Units of measure: lengths (ft-in, ft, in, mm, m…) and areas (sf, sy, m²…) -->
+    <section class="panel-section">
+      <h3>Units</h3>
+      <label class="field">Length Unit
+        <select (change)="unit.set(unitOf($event))">
+          @for (u of lengthUnits; track u) {
+            <option [value]="u" [selected]="unit() === u">{{ unitName(u) }}</option>
+          }
+        </select>
+      </label>
+      <label class="field">Area Unit
+        <select (change)="areaUnit.set(unitOf($event))">
+          @for (u of areaUnits; track u) {
+            <option [value]="u" [selected]="areaUnit() === u">{{ areaName(u) }}</option>
+          }
+        </select>
+      </label>
+      <div class="row-buttons">
+        <button (click)="useForNew()">Use for New Measurements</button>
+        <button [disabled]="!s.hasDocument" (click)="s.applyUnitsToAll(unit(), areaUnit())">Apply to All</button>
+      </div>
+      <p class="secondary small">New lengths use {{ unitName(s.defaultLengthUnit) }}; new areas use {{ areaName(s.defaultAreaUnit) }}. To change only some measurements, select them and use Properties.</p>
     </section>
 
     <!-- Scale of every page: click a page to go to it -->
@@ -95,6 +121,21 @@ import { DrawingStore } from '../../services/drawing.store';
 export class ScalePanel {
   readonly store = inject(DrawingStore);
   readonly scaleGroups = SCALE_GROUPS;
+  readonly lengthUnits = LENGTH_UNITS;
+  readonly areaUnits = AREA_UNITS;
+  readonly unit = signal<LengthUnit>(this.store.defaultLengthUnit);
+  readonly areaUnit = signal<LengthUnit>(this.store.defaultAreaUnit);
+
+  unitOf(e: Event): LengthUnit { return (e.target as HTMLSelectElement).value as LengthUnit; }
+
+  unitName(u: LengthUnit): string { return lengthUnitName(u); }
+  areaName(u: LengthUnit): string { return areaUnitName(u); }
+
+  useForNew(): void {
+    this.store.defaultLengthUnit = this.unit();
+    this.store.defaultAreaUnit = this.areaUnit();
+    this.store.touch();
+  }
 
   isPreset(d: number): boolean { return isPresetScale(d); }
   name(d: number): string { return scaleName(d); }

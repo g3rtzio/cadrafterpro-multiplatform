@@ -5,14 +5,14 @@ import {
 import type { RenderTask } from 'pdfjs-dist';
 import { Markup, Measurement, PlanElement } from '../../models/elements';
 import { COLORS, Pt, Rect, rectFromPoints, rectsIntersect } from '../../models/takeoff';
-import { DrawingStore, OverlayState } from '../../services/drawing.store';
-import { PageGeometry, renderRegion } from '../../services/pdf-render';
-import { captureSnapshot } from '../../services/snapshot';
-import { OcrService } from '../../services/ocr';
-import { PageLabeler } from '../../services/page-labels';
-import { MarkupTools } from '../../services/markup-tools';
-import { Shape, TEXT_FONT, markupShapes, pageShapes, pathOf, rectPath, viewportShapes } from '../../services/shapes';
-import { TextSearch } from '../../services/text-search';
+import { DrawingStore, OverlayState } from '../../services/drawing.store/drawing.store';
+import { PageGeometry, renderRegion } from '../../services/pdf-render/pdf-render';
+import { captureSnapshot } from '../../services/snapshot/snapshot';
+import { OcrService } from '../../services/ocr/ocr';
+import { PageLabeler } from '../../services/page-labels/page-labels';
+import { MarkupTools } from '../../services/markup-tools/markup-tools';
+import { Shape, TEXT_FONT, markupShapes, pageShapes, pathOf, rectPath, viewportShapes } from '../../services/shapes/shapes';
+import { TextSearch } from '../../services/text-search/text-search';
 import { OverlayPanel } from '../overlay-panel/overlay-panel';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
@@ -591,12 +591,40 @@ export class PlanView implements OnDestroy {
       return;
     }
     const p = this.pagePoint(e);
-    this.hover.set(p ? this.snap(p) : null);
+    this.hover.set(p ? this.snap(p, e) : null);
+  }
+
+  // Snap, then Ortho: the point goes to the nearest vertex (Snap) and, with Ortho on or Shift held,
+  // in a straight horizontal or vertical line from the previous point (as seen on screen)
+  private snap(point: Pt, e?: MouseEvent): { point: Pt; snapped: boolean } {
+    const target = this.snapToVertex(point);
+    const s = this.store;
+    if (!(s.orthoEnabled || e?.shiftKey) || this.markups.isFreehand) return target;
+    const anchor = this.orthoAnchor();
+    const g = this.geometry();
+    if (!anchor || !g) return target;
+    const a = g.toView(anchor), p = g.toView(target.point);
+    const straight = Math.abs(p.x - a.x) >= Math.abs(p.y - a.y) ? { x: p.x, y: a.y } : { x: a.x, y: p.y };
+    return { point: g.toPage(straight), snapped: target.snapped };
+  }
+
+  // Point the next one lines up with: previous click of the measurement or markup, or where the drag started
+  private orthoAnchor(): Pt | null {
+    const s = this.store;
+    const page = this.pageIndex();
+    if (s.tool !== 'none') {
+      const last = s.lastMeasuredPoint;
+      return last && last.pageIndex === page ? last.point : null;
+    }
+    if (this.drag?.mode === 'markup') return this.markupPath()?.[0] ?? null;
+    const clicks = this.markups.clicks();
+    if (clicks && clicks.pageIndex === page && clicks.points.length) return clicks.points[clicks.points.length - 1];
+    return null;
   }
 
   // Moves a point to the nearest vertex (drawing lines, markups, measurements)
   // within 12 screen pixels. Only while a measuring tool is active.
-  private snap(point: Pt): { point: Pt; snapped: boolean } {
+  private snapToVertex(point: Pt): { point: Pt; snapped: boolean } {
     const s = this.store;
     if (!s.snapEnabled || (s.tool === 'none' && !this.markups.tool()) || this.markups.isFreehand) return { point, snapped: false };
     const radius = 12 / Math.max(this.zoom(), 0.01);
@@ -643,7 +671,7 @@ export class PlanView implements OnDestroy {
 
     // Markup tools: clicks for a polyline or polygon (double click finishes), a drag for the rest
     if (this.markups.tool() && s.tool === 'none') {
-      const target = this.snap(page);
+      const target = this.snap(page, e);
       if (this.markups.isClickTool) {
         const now = performance.now();
         const last = this.lastClick;
@@ -676,7 +704,7 @@ export class PlanView implements OnDestroy {
     // Measuring: every click adds a point (snapped if Snap is on); double click closes it.
     // A double click is a second click on the same spot within 0.4 s
     if (s.tool !== 'none') {
-      const target = this.snap(page);
+      const target = this.snap(page, e);
       const now = performance.now();
       const last = this.lastClick;
       const isDouble = !!last && now - last.time < 400 && Math.hypot(screen.x - last.x, screen.y - last.y) < 5;
@@ -745,7 +773,7 @@ export class PlanView implements OnDestroy {
     const dx = e.clientX - d.lastScreen.x, dy = e.clientY - d.lastScreen.y;
     // Markup being drawn: freehand tools keep every point, the others only the last one
     if (d.mode === 'markup') {
-      const point = this.snap(g.toPage(this.viewPoint(this.screenPoint(e))));
+      const point = this.snap(g.toPage(this.viewPoint(this.screenPoint(e))), e);
       this.hover.set(point);
       const path = this.markupPath() ?? [];
       if (this.markups.isFreehand) {

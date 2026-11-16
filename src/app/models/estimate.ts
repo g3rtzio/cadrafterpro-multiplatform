@@ -91,9 +91,10 @@ function wbsProps(): PropertyDef[] {
 }
 
 // Properties of a measured element (Area, Linear or Count)
-export function elementTemplate(kind: ElementKind, name: string): PropertyDef[] {
+// markupType: a PDF markup that isn't a measurement ("Highlight", "Cloud"…) shows that as its Type
+export function elementTemplate(kind: ElementKind, name: string, markupType?: string | null): PropertyDef[] {
   const qty = { area: ['[Area]', 'SF'], length: ['[Linear Total]', 'LF'], count: ['[Point Count]', 'EA'] }[kind];
-  const typeName = { area: 'Area', length: 'Linear', count: 'Count' }[kind];
+  const typeName = markupType || { area: 'Area', length: 'Linear', count: 'Count' }[kind];
   const t = 'Takeoff Data';
   return [
     text('Name', 'Item', name), text('Type', 'Item', typeName), text('Description', 'Item'), text('Item #', 'Item'),

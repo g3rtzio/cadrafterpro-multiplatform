@@ -2,19 +2,19 @@ import { Injectable, computed, signal } from '@angular/core';
 import { PDFDocument, PDFPage } from 'pdf-lib';
 import type { PDFRef } from 'pdf-lib';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { Markup, Measurement, PlanElement } from '../models/elements';
+import { Markup, Measurement, PlanElement } from '../../models/elements';
 import {
-  COLORS, LENGTH_UNITS, LengthUnit, LineStyle, Pt, Rect, ScaleViewport, TakeoffItem, TakeoffKind,
+  AREA_UNITS, COLORS, LENGTH_UNITS, LengthUnit, LineStyle, Pt, Rect, ScaleViewport, TakeoffItem, TakeoffKind,
   isArchitecturalScale, kindTitle, kindUnit, polygonArea, polylineLength, quantityText, rectContains,
   scaleName, uid,
-} from '../models/takeoff';
-import { readPage, readPdf, writePdf } from './pdf-file';
-import { PageGeometry, SnapIndex, openRenderer } from './pdf-render';
-import { Cell, xlsxBlob } from './xlsx';
+} from '../../models/takeoff';
+import { readPage, readPdf, writePdf } from '../pdf-file/pdf-file';
+import { PageGeometry, SnapIndex, openRenderer } from '../pdf-render/pdf-render';
+import { Cell, xlsxBlob } from '../xlsx/xlsx';
 import {
   ColumnDef, ElementKind, EstimateData, EstimateGroup, EvalNode, EvalResult, Part, PropertyDef, TAKEOFF_PROPS,
   TakeoffValues, defaultColumns, elementTemplate, emptyEstimate, evaluate, findProp, formatResult, partTemplate,
-} from '../models/estimate';
+} from '../../models/estimate';
 
 // Port of DrawingViewModel.swift: the whole state of the app.
 // Plain fields hold the data; every change calls touch(), and the views read watch()
@@ -178,12 +178,28 @@ export class DrawingStore {
   private snap = readSetting('snapEnabled') !== 'false';
   get snapEnabled(): boolean { return this.snap; }
   set snapEnabled(value: boolean) { this.snap = value; writeSetting('snapEnabled', String(value)); this.touch(); }
+  // Ortho: new points go straight across or straight up/down from the previous one (Shift does it while held)
+  private ortho = readSetting('orthoEnabled') === 'true';
+  get orthoEnabled(): boolean { return this.ortho; }
+  set orthoEnabled(value: boolean) { this.ortho = value; writeSetting('orthoEnabled', String(value)); this.touch(); }
+  // Last point of the measurement being drawn (Ortho lines up the next one with it)
+  get lastMeasuredPoint(): { pageIndex: number; point: Pt } | null {
+    const c = this.current;
+    return c && c.points.length ? { pageIndex: c.pageIndex, point: c.points[c.points.length - 1] } : null;
+  }
 
   // Unit for new measurements (the last one chosen in Properties)
   private lengthUnit: LengthUnit = (LENGTH_UNITS as string[]).includes(readSetting('lengthUnit') ?? '')
     ? readSetting('lengthUnit') as LengthUnit : 'ft';
   get defaultLengthUnit(): LengthUnit { return this.lengthUnit; }
   set defaultLengthUnit(value: LengthUnit) { this.lengthUnit = value; writeSetting('lengthUnit', value); }
+  // Areas have their own unit (sf, sy, m²…), the square of a length unit
+  private areaUnit: LengthUnit = (AREA_UNITS as string[]).includes(readSetting('areaUnit') ?? '')
+    ? readSetting('areaUnit') as LengthUnit : 'ft';
+  get defaultAreaUnit(): LengthUnit { return this.areaUnit; }
+  set defaultAreaUnit(value: LengthUnit) { this.areaUnit = value === 'ft\' in"' ? 'ft' : value; writeSetting('areaUnit', this.areaUnit); }
+  // Unit a new measurement of this kind starts with
+  unitFor(kind: TakeoffKind): LengthUnit { return kind === 'area' ? this.defaultAreaUnit : this.defaultLengthUnit; }
 
   // MARK: - View and tools (bottom bar)
   interaction: InteractionMode = 'select';
@@ -942,11 +958,35 @@ export class DrawingStore {
   get measureLineStyle(): LineStyle { return this.selectedMeasurements[0]?.lineStyle ?? 'Solid'; }
   set measureLineStyle(v: LineStyle) { this.editMeasurements(m => m.lineStyle = v); }
 
-  // Unit of the caption; new measurements use the last one chosen
-  get measureLengthUnit(): LengthUnit { return this.selectedMeasurements[0]?.lengthUnit ?? this.defaultLengthUnit; }
+  // Unit of the caption: lengths and areas separately; new measurements use the last one chosen
+  get measureLengthUnit(): LengthUnit {
+    return this.selectedMeasurements.find(m => m.kind !== 'area' && m.kind !== 'count')?.lengthUnit ?? this.defaultLengthUnit;
+  }
   set measureLengthUnit(v: LengthUnit) {
     this.defaultLengthUnit = v;
-    this.editMeasurements(m => m.lengthUnit = v);
+    this.editMeasurements(m => { if (m.kind !== 'area' && m.kind !== 'count') m.lengthUnit = v; });
+  }
+  get measureAreaUnit(): LengthUnit {
+    const u = this.selectedMeasurements.find(m => m.kind === 'area')?.lengthUnit ?? this.defaultAreaUnit;
+    return u === 'ft\' in"' ? 'ft' : u;
+  }
+  set measureAreaUnit(v: LengthUnit) {
+    this.defaultAreaUnit = v;
+    this.editMeasurements(m => { if (m.kind === 'area') m.lengthUnit = v; });
+  }
+
+  // Units panel: unit of every length and every area caption in the drawing (one Undo step)
+  applyUnitsToAll(lengthUnit: LengthUnit, areaUnit: LengthUnit): void {
+    this.defaultLengthUnit = lengthUnit;
+    this.defaultAreaUnit = areaUnit;
+    const target = (m: Measurement) => m.kind === 'area' ? this.defaultAreaUnit : lengthUnit;
+    const list = this.measurements.filter(m => m.kind !== 'count' && m.lengthUnit !== target(m));
+    if (list.length) {
+      this.checkpoint();
+      list.forEach(m => { m.lengthUnit = target(m); this.updateCaption(m); });
+    }
+    this.touch();
+    this.showToast(list.length ? `Units changed on ${list.length} measurement${list.length === 1 ? '' : 's'}` : 'Units saved for new measurements');
   }
 
   get measureArrows(): boolean { return this.selectedMeasurements[0]?.arrowEnds ?? false; }
@@ -1240,7 +1280,7 @@ export class DrawingStore {
   }
 
   liveText(points: Pt[], kind: TakeoffKind, pageIndex: number): string {
-    return quantityText(this.value(points, kind, pageIndex), kind, this.defaultLengthUnit);
+    return quantityText(this.value(points, kind, pageIndex), kind, this.unitFor(kind));
   }
 
   // MARK: - Snap points of a page (read once, in the background)
@@ -1287,7 +1327,7 @@ export class DrawingStore {
       const m = new Measurement(item.kind, pageIndex, item.id);
       m.lineColor = item.color;
       m.fillColor = item.fillColor ?? null;
-      m.lengthUnit = this.defaultLengthUnit;
+      m.lengthUnit = this.unitFor(item.kind);
       m.arrowEnds = item.name === 'Dimension';       // Dimension: arrows on both ends
       m.visible = item.isVisible;
       this.measurements.push(m);
@@ -1782,9 +1822,23 @@ export class DrawingStore {
   rowProps(key: string): PropertyDef[] {
     const part = this.estimate.parts.find(p => p.id === key);
     if (part) return part.props;
+    const markupType = this.markupTypeOf(key);
     const saved = this.estimate.elementProps[key];
-    if (saved) return saved;
-    return elementTemplate(this.elementInfo(key)?.kind ?? 'count', key);
+    if (saved) {
+      // Saved before markups had their own type: "Count" becomes "Highlight", "Cloud"…
+      const type = saved.find(p => p.name === 'Type');
+      if (type && markupType && type.formula === 'Count') type.formula = markupType;
+      return saved;
+    }
+    return elementTemplate(this.elementInfo(key)?.kind ?? 'count', key, markupType);
+  }
+
+  // Type of the PDF markups named `name` when they are not measurements (null for takeoff elements)
+  markupTypeOf(name: string): string | null {
+    if (this.items.some(i => i.name === name && this.measurements.some(m => m.itemId === i.id))) return null;
+    const list = this.markups.filter(m => m.isPlanElement && m.name === name);
+    const types = new Set(list.map(m => m.markupType));
+    return types.size === 1 ? [...types][0] : null;
   }
 
   // What the formulas of a row are calculated from. `props` replaces the row's list
