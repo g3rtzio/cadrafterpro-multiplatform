@@ -153,6 +153,17 @@ function readMarkupTools(dict: PDFDict, m: Markup): void {
   const be = dict.lookupMaybe(PDFName.of('BE'), PDFDict);
   if (be && nameOf(be, 'S') === 'C') m.cloud = numberOf(be, 'I') ?? 1;
   m.callout = pairs(numbersOf(dict, 'CL'));
+  // Text markups: one box per /QuadPoints group of four corners
+  const quads = numbersOf(dict, 'QuadPoints');
+  if (quads && quads.length >= 8) {
+    m.quads = [];
+    for (let i = 0; i + 7 < quads.length; i += 8) {
+      const corners = pairs(quads.slice(i, i + 8)) ?? [];
+      m.quads.push(boundsOf(corners));
+    }
+  }
+  const action = dict.lookupMaybe(PDFName.of('A'), PDFDict);
+  if (action) m.uri = textOf(action, 'URI');
   const le = dict.lookup(PDFName.of('LE'));
   if (le instanceof PDFName) m.lineEnds = [le.decodeText()];
   else if (le instanceof PDFArray) {
@@ -630,6 +641,20 @@ function markupToolDict(lib: PDFDocument, font: PDFFont, m: Markup, author: stri
     });
     if (m.callout) dict['CL'] = flat(m.callout);
   }
+
+  // Text markups: corners of each box in Acrobat's order (top-left, top-right, bottom-left, bottom-right)
+  if (m.quads?.length) {
+    dict['QuadPoints'] = m.quads.flatMap(q => [q.x, q.y + q.h, q.x + q.w, q.y + q.h, q.x, q.y, q.x + q.w, q.y]);
+  }
+  if (m.subtype === 'Link') {
+    delete dict['BS'];
+    delete dict['AP'];
+    dict['Border'] = [0, 0, 0];
+    const target = m.destPage !== null ? lib.getPages()[m.destPage] : undefined;
+    if (m.uri) dict['A'] = { S: 'URI', URI: PDFString.of(ascii(m.uri)) };
+    else if (target) dict['Dest'] = [target.ref, PDFName.of('Fit')];
+  }
+  if (m.subtype === 'Redact') dict['OC'] = rgb(m.color ?? '#FF0000');
   return lib.context.obj(dict as Record<string, PDFObject>);
 }
 
@@ -688,6 +713,37 @@ function markupAppearance(lib: PDFDocument, font: PDFFont, m: Markup): PDFRef {
     case 'Ink':
       for (const p of m.inkList ?? []) if (p.length > 1) paint(path(p, false), false);
       break;
+    case 'Highlight':
+    case 'Underline':
+    case 'Squiggly':
+    case 'StrikeOut':
+    case 'Redact':
+      for (const q of m.quads ?? []) {
+        const t = Math.max(q.h * 0.07, 0.6);
+        const line = (y: number) => `${num(q.x)} ${num(y)} m ${num(q.x + q.w)} ${num(y)} l S`;
+        switch (m.subtype) {
+          case 'Highlight':
+            ops.push('q /GS2 gs', `${r} ${g} ${b} rg`, `${num(q.x)} ${num(q.y)} ${num(q.w)} ${num(q.h)} re f`, 'Q');
+            break;
+          case 'Underline':
+            ops.push('q /GS0 gs', `${r} ${g} ${b} RG ${num(t)} w`, line(q.y + t), 'Q');
+            break;
+          case 'StrikeOut':
+            ops.push('q /GS0 gs', `${r} ${g} ${b} RG ${num(t)} w`, line(q.y + q.h * 0.45), 'Q');
+            break;
+          case 'Squiggly': {
+            const step = Math.max(q.h * 0.18, 1);
+            const pts: Pt[] = [];
+            for (let x = q.x, i = 0; x <= q.x + q.w + 0.01; x += step, i++) pts.push({ x, y: q.y + (i % 2 ? 0 : step) });
+            ops.push('q /GS0 gs', `${r} ${g} ${b} RG ${num(t)} w 1 J 1 j`, path(pts, false) + ' S', 'Q');
+            break;
+          }
+          case 'Redact':
+            ops.push('q /GS0 gs', `${r} ${g} ${b} RG ${num(t)} w`, `${num(q.x)} ${num(q.y)} ${num(q.w)} ${num(q.h)} re S`, 'Q');
+            break;
+        }
+      }
+      break;
     case 'FreeText': {
       const box = m.textRect;
       if (m.callout && m.callout.length >= 2) {
@@ -719,6 +775,7 @@ function markupAppearance(lib: PDFDocument, font: PDFFont, m: Markup): PDFRef {
       ExtGState: {
         GS0: { CA: m.opacity, ca: m.opacity, ...(m.multiply ? { BM: 'Multiply' } : {}) },
         GS1: { CA: m.opacity, ca: m.opacity * (m.fillOpacity ?? 1), ...(m.multiply ? { BM: 'Multiply' } : {}) },
+        GS2: { CA: m.opacity, ca: m.opacity * 0.5, BM: 'Multiply' },
       },
       Font: { Helv: font.ref },
     },

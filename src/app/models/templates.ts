@@ -1,4 +1,4 @@
-import { ColumnDef, PropertyDef, defaultColumns, elementTemplate, findProp, partTemplate } from './estimate';
+import { ColumnDef, EstimateGroup, PropertyDef, defaultColumns, elementTemplate, findProp, partTemplate } from './estimate';
 import { COLORS, TakeoffKind } from './takeoff';
 
 // Templates (PlanSwift "Templates" pane): reusable takeoff items with their properties and parts,
@@ -35,10 +35,12 @@ export interface TemplateLibraryData {
 }
 
 // Estimating Layout (PlanSwift "Estimating Layouts"): a saved set of estimate columns
+// (with their order and widths) and, once saved from a document, its groups
 export interface EstimateLayout {
   id: string;
   name: string;
   columns: ColumnDef[];
+  groups?: EstimateGroup[];       // missing = loading the layout leaves the groups as they are
 }
 
 export function newId(prefix: string): string {

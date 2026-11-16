@@ -4,7 +4,7 @@ import { EstimateLayouts } from '../../services/estimate-layouts';
 import { AutoFocus } from '../auto-focus/auto-focus';
 
 // "Estimating Layouts" panel on the left of the estimate (PlanSwift style).
-// Click a layout to show its columns. Change the columns with the Columns button,
+// Click a layout to show its columns (order, widths) and groups. Change them in the estimate,
 // then Save keeps them in the selected layout, or New makes another layout with them.
 // Double-click renames. « folds the panel to a thin strip.
 @Component({
@@ -55,6 +55,12 @@ import { AutoFocus } from '../auto-focus/auto-focus';
         <button class="icon-button" title="Restore Default, Takeoff View and Cost View" (click)="l.restoreBuiltIns()">
           <span class="icon small">restart_alt</span>
         </button>
+        <button class="icon-button" title="Import layouts (.json)" (click)="l.importLayouts()">
+          <span class="icon small accent">upload_file</span>
+        </button>
+        <button class="icon-button" title="Export all layouts (.json)" (click)="l.exportLayouts()">
+          <span class="icon small accent">download</span>
+        </button>
       </div>
       <div class="layouts-list">
         @for (layout of l.layouts; track layout.id) {
@@ -70,14 +76,14 @@ import { AutoFocus } from '../auto-focus/auto-focus';
             } @else {
               <span class="name">{{ layout.name }}</span>
               @if (l.activeId === layout.id && l.isModified) {
-                <span class="secondary small" title="The columns changed since this layout was loaded. Save to keep them.">modified</span>
+                <span class="secondary small" title="The columns or groups changed since this layout was loaded. Save to keep them.">modified</span>
               }
             }
           </div>
         }
       </div>
       <div class="layouts-hint secondary small">
-        Click a layout to show its columns. Change them with Columns, then Save.
+        Click a layout to show its columns and groups. Change them in the estimate, then Save.
       </div>
     }
   `,

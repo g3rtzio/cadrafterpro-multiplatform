@@ -5,7 +5,9 @@ import {
 import { DrawingStore } from '../../services/drawing.store';
 import { renderRegion } from '../../services/pdf-render';
 import { pageShapes } from '../../services/shapes';
+import { PageLabeler } from '../../services/page-labels';
 import { InsertPagesDialog } from '../insert-pages-dialog/insert-pages-dialog';
+import { PageLabelsDialog } from '../page-labels-dialog/page-labels-dialog';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
 const THUMB_WIDTH = 180;
@@ -85,7 +87,7 @@ export class PageThumb implements OnDestroy {
 // Click = go to the page, Ctrl/⌘ + click = add to the selection, Shift + click = a range.
 @Component({
   selector: 'app-thumbnails',
-  imports: [InsertPagesDialog, PageThumb],
+  imports: [InsertPagesDialog, PageLabelsDialog, PageThumb],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'thumbnails',
@@ -122,6 +124,8 @@ export class PageThumb implements OnDestroy {
         <span class="icon small">arrow_downward</span></button>
       <button class="icon-button" title="Delete the selected pages" [disabled]="s.pageCount < 2"
               (click)="deleteSelected()"><span class="icon small">delete</span></button>
+      <button class="icon-button" title="Create Page Labels: name the pages from bookmarks or from a region"
+              [disabled]="!s.hasDocument" (click)="labeler.open()"><span class="icon small">label</span></button>
       <span class="count">{{ selectedList().length > 1 ? selectedList().length + ' of ' : '' }}{{ s.pageCount }} pages</span>
     </div>
 
@@ -148,12 +152,15 @@ export class PageThumb implements OnDestroy {
                 (click)="menu.set(null); moveTo(s.pageCount)">Move to End</button>
         <div class="menu-divider"></div>
         <button class="menu-item" (click)="menu.set(null); s.goTo(m.index); s.startOverlay()">Overlay with Another Page…</button>
+        <button class="menu-item" (click)="menu.set(null); labeler.open()">Create Page Labels…</button>
         <div class="menu-divider"></div>
         <button class="menu-item destructive" [disabled]="s.pageCount < 2" (click)="menu.set(null); deleteSelected()">
           Delete {{ selectedList().length > 1 ? selectedList().length + ' Pages' : 'Page' }}
         </button>
       </div>
     }
+
+    @if (labeler.dialogOpen() && !labeler.selecting()) { <app-page-labels-dialog /> }
 
     @for (request of s.insertRequest ? [s.insertRequest] : []; track request.id) {
       <app-insert-pages-dialog />
@@ -162,6 +169,7 @@ export class PageThumb implements OnDestroy {
 })
 export class Thumbnails {
   readonly store = inject(DrawingStore);
+  readonly labeler = inject(PageLabeler);
   // Pages selected besides the current one (indexes); cleared whenever the pages change
   private readonly extra = signal<Set<number>>(new Set());
   private anchor: number | null = null;

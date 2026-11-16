@@ -165,6 +165,16 @@ export class OcrService {
     await this.run([{ page, area, isRegion: true }]);
   }
 
+  // Text of a region, read without the OCR panel and without keeping a result
+  // (Create Page Labels uses it for scanned sheets). Empty when nothing was read.
+  async readText(page: PageGeometry, area: Rect): Promise<string> {
+    if (this.busy()) throw new Error('OCR is already running');
+    this.cancelled = false;
+    const worker = await this.getWorker();
+    const result = await this.recognize(worker, page, area, true, () => undefined);
+    return result?.text.trim() ?? '';
+  }
+
   async recognizeCurrentPage(): Promise<void> {
     const page = this.store.pages[this.store.currentPageIndex];
     if (!page) return;

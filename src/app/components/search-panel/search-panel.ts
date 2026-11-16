@@ -1,13 +1,16 @@
 import { ChangeDetectionStrategy, Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
+import { COLORS } from '../../models/takeoff';
 import { DrawingStore } from '../../services/drawing.store';
 import { SearchHit, TextSearch } from '../../services/text-search';
 
 // Search panel of the right side bar (like Revu's Search): text box, where to search,
 // options, and the results grouped by page. Click a result to zoom to it on the plan.
+// Tick results to act on them (lightning menu): highlight, underline, squiggly, strikethrough,
+// mark for redaction, hyperlink, or put a count of an element on each one.
 @Component({
   selector: 'app-search-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { class: 'properties search-panel' },
+  host: { class: 'properties search-panel', '(document:click)': 'menuOpen.set(false)' },
   template: `
     @let s = store.watch();
     <section class="panel-section">
@@ -63,13 +66,103 @@ import { SearchHit, TextSearch } from '../../services/text-search';
       @if (search.busy()) {
         <div class="secondary small">{{ search.progress() }}</div>
       }
-      @for (group of groups(); track group.pageIndex) {
-        <div class="result-page">{{ s.pageName(group.pageIndex) }} <span class="secondary">({{ group.hits.length }})</span></div>
-        @for (hit of group.hits; track hit.id) {
-          <button class="result-row" [class.current]="search.focused() === hit" (click)="search.focus(hit)">
-            @if (hit.source === 'markup') { <span class="icon small secondary">sticky_note_2</span> }
-            <span class="snippet">{{ hit.before }}<mark>{{ hit.match }}</mark>{{ hit.after }}</span>
+      @if (search.results().length) {
+        @let ticked = search.checked().size;
+        <!-- Tick all, actions on the ticked results, remove them from the list -->
+        <div class="results-tools">
+          <input type="checkbox" title="Select All" [checked]="ticked > 0 && ticked === search.results().length"
+                 [indeterminate]="ticked > 0 && ticked < search.results().length" (change)="search.setAll(checked($event))" />
+          <span class="secondary small">{{ ticked ? ticked + ' checked' : 'Select all' }}</span>
+          <span class="spacer"></span>
+          <div class="menu-anchor">
+            <button class="icon-button" title="Actions on the checked results" [disabled]="!ticked"
+                    (click)="$event.stopPropagation(); menuOpen.set(!menuOpen()); panel.set(null)">
+              <span class="icon small">bolt</span><span class="icon small">expand_more</span>
+            </button>
+            @if (menuOpen()) {
+              <div class="menu actions-menu" (click)="$event.stopPropagation()">
+                <button class="menu-item" (click)="openPanel('link')"><span class="icon small">link</span> Hyperlink Checked…</button>
+                <button class="menu-item" (click)="mark('Redact')"><span class="icon small">ink_eraser</span> Mark for Redaction</button>
+                <button class="menu-item" (click)="openPanel('count')"><span class="icon small">tally_mark_4</span> Apply Count Measurement to Checked…</button>
+                <div class="menu-divider"></div>
+                <button class="menu-item" (click)="mark('Highlight')"><span class="icon small">ink_highlighter</span> Highlight Checked</button>
+                <button class="menu-item" (click)="mark('Underline')"><span class="icon small">format_underlined</span> Underline Checked</button>
+                <button class="menu-item" (click)="mark('Squiggly')"><span class="icon small">format_underlined_squiggle</span> Squiggly Checked</button>
+                <button class="menu-item" (click)="mark('StrikeOut')"><span class="icon small">strikethrough_s</span> Strikethrough Checked</button>
+              </div>
+            }
+          </div>
+          <button class="icon-button" title="Remove the checked results from the list" [disabled]="!ticked" (click)="search.removeChecked()">
+            <span class="icon small">delete</span>
           </button>
+        </div>
+
+        <!-- Apply Count Measurement to Checked: pick the element (or make a new one) -->
+        @if (panel() === 'count') {
+          <div class="action-box">
+            <div class="action-title">Apply Count to {{ ticked }} result{{ ticked === 1 ? '' : 's' }}</div>
+            <div class="search-box">
+              <span class="icon small secondary">search</span>
+              <input type="text" placeholder="Find element" [value]="countFilter()" (input)="countFilter.set(value($event))" />
+            </div>
+            <div class="picker-header">New count</div>
+            <div class="new-count">
+              <input type="text" [value]="newName()" (input)="newName.set(value($event))" placeholder="Name" />
+              @for (c of newColors; track c) {
+                <button class="color-dot" [style.background]="c" [title]="'New count in this color'" (click)="applyNewCount(c)"></button>
+              }
+            </div>
+            <div class="picker-header">Count elements</div>
+            @for (item of countItems(); track item.id) {
+              <button class="picker-row" (click)="applyCount(item.id)">
+                <span class="swatch" [style.background]="item.color"></span>{{ item.name }}
+                <span class="spacer"></span><span class="secondary small">{{ countOf(item.id) }} ea</span>
+              </button>
+            } @empty {
+              <div class="secondary small">No count elements{{ countFilter() ? ' match' : ' yet' }}.</div>
+            }
+            <div class="row-buttons"><button (click)="panel.set(null)">Cancel</button></div>
+          </div>
+        }
+
+        <!-- Hyperlink Checked: a web address or a page of this drawing -->
+        @if (panel() === 'link') {
+          <div class="action-box">
+            <div class="action-title">Hyperlink {{ ticked }} result{{ ticked === 1 ? '' : 's' }}</div>
+            <div class="segmented">
+              <button [class.active]="linkKind() === 'page'" (click)="linkKind.set('page')">Page</button>
+              <button [class.active]="linkKind() === 'uri'" (click)="linkKind.set('uri')">Web Address</button>
+            </div>
+            @if (linkKind() === 'page') {
+              <select (change)="linkPage.set(+value($event))">
+                @for (i of pageIndexes(); track i) {
+                  <option [value]="i" [selected]="linkPage() === i">{{ s.pageName(i) }}</option>
+                }
+              </select>
+            } @else {
+              <input type="text" placeholder="https://…" [value]="linkUri()" (input)="linkUri.set(value($event))" />
+            }
+            <div class="row-buttons">
+              <button (click)="panel.set(null)">Cancel</button>
+              <button class="primary" [disabled]="linkKind() === 'uri' && !linkUri().trim()" (click)="applyLink()">Add Links</button>
+            </div>
+          </div>
+        }
+      }
+
+      @for (group of groups(); track group.pageIndex) {
+        <div class="result-page">
+          <input type="checkbox" [checked]="allChecked(group.hits)" (change)="search.toggleGroup(group.hits, checked($event))" />
+          {{ s.pageName(group.pageIndex) }} <span class="secondary">({{ group.hits.length }})</span>
+        </div>
+        @for (hit of group.hits; track hit.id) {
+          <div class="result-row" [class.current]="search.focused() === hit">
+            <input type="checkbox" [checked]="search.isChecked(hit)" (change)="search.toggle(hit)" />
+            <button class="result-text" (click)="search.focus(hit)">
+              @if (hit.source === 'markup') { <span class="icon small secondary">sticky_note_2</span> }
+              <span class="snippet">{{ hit.before }}<mark>{{ hit.match }}</mark>{{ hit.after }}</span>
+            </button>
+          </div>
         }
       } @empty {
         @if (search.searched() && !search.busy()) {
@@ -108,19 +201,34 @@ import { SearchHit, TextSearch } from '../../services/text-search';
     }
     .results-header { display: flex; align-items: center; gap: 2px; }
     .results-header h3 { margin: 0; }
-    .result-page { font-weight: 600; font-size: 12px; margin-top: 6px; }
-    .result-row {
+    .result-page { display: flex; align-items: center; gap: 4px; font-weight: 600; font-size: 12px; margin-top: 6px; }
+    .result-row { display: flex; align-items: flex-start; gap: 2px; border-radius: 5px; padding-left: 4px; }
+    .result-row input { margin-top: 4px; }
+    .result-text {
+      flex: 1;
+      min-width: 0;
       display: flex;
       align-items: flex-start;
       gap: 4px;
-      width: 100%;
       border: none;
       background: transparent;
       text-align: left;
-      padding: 3px 6px;
-      border-radius: 5px;
+      padding: 3px 4px;
       font-size: 12px;
     }
+    .results-tools { display: flex; align-items: center; gap: 4px; padding: 2px 0 2px 4px; border-bottom: 1px solid var(--border); }
+    .actions-menu { left: auto; right: 0; min-width: 250px; }
+    .action-box { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; padding: 8px; border: 1px solid var(--border);
+      border-radius: 7px; background: var(--panel); }
+    .action-title { font-weight: 600; }
+    .picker-header { font-size: 11px; font-weight: 600; color: var(--secondary); margin-top: 2px; }
+    .picker-row { display: flex; align-items: center; gap: 6px; width: 100%; border: none; background: transparent;
+      text-align: left; padding: 3px 4px; border-radius: 5px; }
+    .picker-row:hover { background: var(--hover); }
+    .new-count { display: flex; align-items: center; gap: 4px; }
+    .new-count input { flex: 1; min-width: 0; }
+    .color-dot { width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid rgba(0, 0, 0, 0.2); flex: none; }
+    .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
     .result-row.current { background: var(--accent-soft); }
     .snippet { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
     mark { background: rgba(255, 149, 0, 0.55); color: inherit; border-radius: 2px; padding: 0 1px; }
@@ -130,6 +238,14 @@ export class SearchPanel {
   readonly store = inject(DrawingStore);
   readonly search = inject(TextSearch);
   readonly showOptions = signal(true);
+  readonly menuOpen = signal(false);
+  readonly panel = signal<'count' | 'link' | null>(null);
+  readonly countFilter = signal('');
+  readonly newName = signal('');
+  readonly linkKind = signal<'page' | 'uri'>('page');
+  readonly linkPage = signal(0);
+  readonly linkUri = signal('');
+  readonly newColors = [COLORS.red, COLORS.orange, COLORS.green, COLORS.blue, COLORS.purple];
   private readonly field = viewChild<ElementRef<HTMLInputElement>>('field');
   private lastQuery = '';
 
@@ -149,6 +265,61 @@ export class SearchPanel {
     const i = list.indexOf(this.search.focused() as SearchHit);
     return `${i >= 0 ? i + 1 : 0} of ${list.length}`;
   });
+
+  // Count elements for the picker (filtered by the text typed above them)
+  countItems() {
+    const q = this.countFilter().trim().toLowerCase();
+    return this.store.watch().items.filter(i => i.kind === 'count' && (!q || i.name.toLowerCase().includes(q)));
+  }
+
+  countOf(itemId: string): number {
+    return this.store.measurements.filter(m => m.itemId === itemId).reduce((n, m) => n + m.points.length, 0);
+  }
+
+  pageIndexes(): number[] {
+    return Array.from({ length: this.store.pageCount }, (_, i) => i);
+  }
+
+  allChecked(hits: SearchHit[]): boolean {
+    return hits.every(h => this.search.isChecked(h));
+  }
+
+  openPanel(kind: 'count' | 'link'): void {
+    this.menuOpen.set(false);
+    this.panel.set(kind);
+    if (kind === 'count') {
+      this.countFilter.set('');
+      this.newName.set(this.search.query().trim());
+    } else {
+      this.linkPage.set(this.store.currentPageIndex);
+    }
+  }
+
+  mark(subtype: 'Highlight' | 'Underline' | 'Squiggly' | 'StrikeOut' | 'Redact'): void {
+    this.menuOpen.set(false);
+    this.search.markChecked(subtype);
+  }
+
+  applyCount(itemId: string): void {
+    this.search.countChecked(itemId);
+    this.panel.set(null);
+  }
+
+  // New count element (named after the search by default) with a count on every ticked result
+  applyNewCount(color: string): void {
+    const s = this.store;
+    const name = this.newName().trim() || 'Count';
+    s.addItem(name, 'count', color);
+    const item = s.items[s.items.length - 1];
+    s.cancelTool();                       // addItem starts measuring with it; here the counts are placed for you
+    this.applyCount(item.id);
+  }
+
+  applyLink(): void {
+    const uri = this.linkUri().trim();
+    this.search.linkChecked(this.linkKind() === 'uri' ? { uri: /^[a-z]+:/i.test(uri) ? uri : 'https://' + uri } : { page: this.linkPage() });
+    this.panel.set(null);
+  }
 
   focusField(): void {
     const input = this.field()?.nativeElement;

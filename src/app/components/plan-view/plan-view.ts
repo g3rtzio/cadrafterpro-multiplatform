@@ -9,6 +9,7 @@ import { DrawingStore, OverlayState } from '../../services/drawing.store';
 import { PageGeometry, renderRegion } from '../../services/pdf-render';
 import { captureSnapshot } from '../../services/snapshot';
 import { OcrService } from '../../services/ocr';
+import { PageLabeler } from '../../services/page-labels';
 import { MarkupTools } from '../../services/markup-tools';
 import { Shape, TEXT_FONT, markupShapes, pageShapes, pathOf, rectPath, viewportShapes } from '../../services/shapes';
 import { TextSearch } from '../../services/text-search';
@@ -16,7 +17,7 @@ import { OverlayPanel } from '../overlay-panel/overlay-panel';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
 const MIN_ZOOM = 0.05;
-type DragMode = 'pan' | 'move' | 'marquee' | 'viewport' | 'ocr' | 'snapshot' | 'overlay' | 'markup';
+type DragMode = 'pan' | 'move' | 'marquee' | 'viewport' | 'ocr' | 'snapshot' | 'overlay' | 'markup' | 'labels';
 const MAX_ZOOM = 40;
 const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7 M pixels
 
@@ -96,6 +97,7 @@ export class PlanView implements OnDestroy {
   readonly textFont = TEXT_FONT;
   private readonly editorField = viewChild<ElementRef<HTMLTextAreaElement>>('editorField');
   readonly ocr = inject(OcrService);
+  readonly labeler = inject(PageLabeler);
   private readonly host = viewChild.required<ElementRef<HTMLDivElement>>('host');
   private readonly backgroundCanvas = viewChild<ElementRef<HTMLCanvasElement>>('background');
   private readonly detailCanvas = viewChild<ElementRef<HTMLCanvasElement>>('detail');
@@ -150,7 +152,7 @@ export class PlanView implements OnDestroy {
 
   readonly cursor = computed(() => {
     const s = this.store.watch();
-    if (s.snapshotMode === 'capture') return 'crosshair';
+    if (s.snapshotMode === 'capture' || this.labeler.selecting()) return 'crosshair';
     if (s.snapshotMode === 'place') return 'copy';
     if (this.overlayHere()?.adjusting) return 'move';
     if (s.tool !== 'none' || s.drawingViewport || this.markups.tool() || this.ocr.drawingRegion()) return 'crosshair';
@@ -660,6 +662,8 @@ export class PlanView implements OnDestroy {
 
     // Snapshot: drag the region to copy, or click to drop the copied picture
     if (s.snapshotMode === 'capture') return start('snapshot');
+    // Create Page Labels: the box around the page name
+    if (this.labeler.selecting()) return start('labels');
     if (s.snapshotMode === 'place') {
       const clip = s.snapshotClip;
       if (clip) s.placeSnapshot(this.pageIndex(), g.rectToPage({ x: view.x - clip.w / 2, y: view.y - clip.h / 2, w: clip.w, h: clip.h }));
@@ -776,6 +780,7 @@ export class PlanView implements OnDestroy {
       case 'viewport':
       case 'snapshot':
       case 'ocr':
+      case 'labels':
         this.marquee.set(rectFromPoints(d.startView, view));
         break;
       case 'overlay': {
@@ -813,6 +818,12 @@ export class PlanView implements OnDestroy {
         // Mouse up on a viewport box: hand it to the model
         if (box && box.w * this.zoom() > 3 && box.h * this.zoom() > 3) s.finishViewport(g.rectToPage(box), this.pageIndex());
         else s.cancelViewport();
+        break;
+      case 'labels':
+        // Mouse up on the page-label box: read it and go back to the dialog
+        if (box && box.w * this.zoom() > 3 && box.h * this.zoom() > 3) {
+          void this.labeler.finishSelecting(this.pageIndex(), clip(box, g.width, g.height));
+        } else this.labeler.cancelSelecting();
         break;
       case 'snapshot': {
         // Mouse up on the snapshot box: copy that region
@@ -872,6 +883,11 @@ export class PlanView implements OnDestroy {
     }
 
     // OCR region: Esc cancels it
+    if (this.labeler.selecting() && e.key === 'Escape') {
+      this.marquee.set(null);
+      this.labeler.cancelSelecting();
+      return;
+    }
     if (this.ocr.drawingRegion() && e.key === 'Escape') {
       this.marquee.set(null);
       this.ocr.cancelRegion();

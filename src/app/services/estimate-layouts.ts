@@ -4,9 +4,10 @@ import { DrawingStore } from './drawing.store';
 
 const STORAGE_KEY = 'estimateLayouts';
 
-// Estimating Layouts (PlanSwift style): named sets of estimate columns, kept in this browser
-// and shared by every document. Clicking a layout shows its columns; Save keeps the current
-// columns (after changing them in the Columns window) in the selected layout.
+// Estimating Layouts (PlanSwift style): named sets of estimate columns (order, widths, decimals…)
+// and groups, kept in this browser and shared by every document. Clicking a layout shows its
+// columns and groups; Save keeps the current ones in the selected layout.
+// Import / Export move layouts between computers as a .json file.
 @Injectable({ providedIn: 'root' })
 export class EstimateLayouts {
   private readonly store = inject(DrawingStore);
@@ -42,18 +43,26 @@ export class EstimateLayouts {
     return this.layouts.find(l => l.id === this.activeId);
   }
 
-  // The columns were changed (Columns window) after loading the layout
+  // The columns or groups changed after loading the layout
   get isModified(): boolean {
     const layout = this.active;
-    return !!layout && JSON.stringify(layout.columns) !== JSON.stringify(this.store.estimate.columns);
+    if (!layout) return false;
+    const e = this.store.estimate;
+    return JSON.stringify(layout.columns) !== JSON.stringify(e.columns)
+      || (!!layout.groups && JSON.stringify(layout.groups) !== JSON.stringify(e.groups));
   }
 
-  // Shows the layout's columns in the estimate (Undo brings the previous ones back)
+  // Shows the layout's columns (and its groups, if it has them) in the estimate.
+  // One Undo brings the previous ones back.
   apply(id: string): void {
     const layout = this.layouts.find(l => l.id === id);
-    if (!layout || !this.store.hasDocument) return;
+    const s = this.store;
+    if (!layout || !s.hasDocument) return;
     this.activeId = id;
-    this.store.applyColumns(structuredClone(layout.columns));
+    s.checkpoint();
+    s.estimate.columns = structuredClone(layout.columns);
+    if (layout.groups) s.estimate.groups = structuredClone(layout.groups);
+    s.estimateChanged();
   }
 
   // Save: the current columns go into the selected layout
@@ -64,6 +73,7 @@ export class EstimateLayouts {
       return;
     }
     layout.columns = structuredClone(this.store.estimate.columns);
+    layout.groups = structuredClone(this.store.estimate.groups);
     this.changed();
     this.store.showToast(`Saved layout "${layout.name}"`);
   }
@@ -75,6 +85,7 @@ export class EstimateLayouts {
     while (used.has(`Layout ${n}`)) n++;
     const layout: EstimateLayout = {
       id: newId('layout'), name: `Layout ${n}`, columns: structuredClone(this.store.estimate.columns),
+      groups: structuredClone(this.store.estimate.groups),
     };
     this.layouts.push(layout);
     this.renaming = layout.id;
@@ -118,6 +129,46 @@ export class EstimateLayouts {
       if (i >= 0) this.layouts[i] = builtIn; else this.layouts.push(builtIn);
     }
     this.changed();
+  }
+
+  // MARK: - Import / Export (.json)
+  exportLayouts(): void {
+    const blob = new Blob([JSON.stringify(this.layouts, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'CadrafterPro Layouts.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // Imported layouts are added to the list (a name already used gets a number)
+  importLayouts(): void {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const data = JSON.parse(await file.text()) as unknown;
+        const list = (Array.isArray(data) ? data : [data]) as Partial<EstimateLayout>[];
+        const valid = list.filter(l => typeof l.name === 'string' && Array.isArray(l.columns) && l.columns.length);
+        if (valid.length === 0) throw new Error('No layouts');
+        const used = new Set(this.layouts.map(l => l.name));
+        for (const l of valid) {
+          let name = l.name!;
+          for (let n = 2; used.has(name); n++) name = `${l.name} ${n}`;
+          used.add(name);
+          this.layouts.push({ id: newId('layout'), name, columns: l.columns!, groups: Array.isArray(l.groups) ? l.groups : undefined });
+        }
+        this.changed();
+        this.store.showToast(`Imported ${valid.length} ${valid.length === 1 ? 'layout' : 'layouts'}`);
+      } catch {
+        this.store.showToast('That file has no estimating layouts', true);
+      }
+    });
+    input.click();
   }
 }
 

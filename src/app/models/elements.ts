@@ -132,6 +132,9 @@ export class Markup {
   lineEnds: string[] | null = null;        // /LE: line endings ("None", "OpenArrow", "ClosedArrow")
   fontSize = 12;                           // FreeText font size (from /DA or /DS)
   textColor: string | null = null;         // FreeText text color (null = black)
+  quads: Rect[] | null = null;             // /QuadPoints of text markups (highlight, underline, redaction, link)
+  uri: string | null = null;               // Link: web address (/A /URI)
+  destPage: number | null = null;          // Link: page it jumps to (0-based)
 
   constructor(public pageIndex: number) {}
 
@@ -172,6 +175,12 @@ export class Markup {
       case 'Ink':
         if (this.inkList) this.rect = boundsOf(this.inkList.flat(), this.lineWidth / 2 + 2);
         break;
+      default:
+        // Text markups: the box around every marked piece of text
+        if (this.quads?.length) {
+          this.rect = boundsOf(this.quads.flatMap(q => [{ x: q.x, y: q.y }, { x: q.x + q.w, y: q.y + q.h }]), 1);
+        }
+        break;
     }
   }
 
@@ -180,7 +189,9 @@ export class Markup {
 
   // Can be selected on the plan and listed in the tree
   get isPlanElement(): boolean {
-    const notElements = ['Link', 'Widget', 'Popup'];
+    // Links made from search results are shown (and can be deleted); other links stay hidden
+    if (this.subtype === 'Link') return this.appMade;
+    const notElements = ['Widget', 'Popup'];
     return !notElements.includes(this.subtype);
   }
 
@@ -201,6 +212,7 @@ export class Markup {
     if (this.inkList) this.inkList = this.inkList.map(path => path.map(shift));
     if (this.callout) this.callout = this.callout.map(shift);
     if (this.textBox) this.textBox = { ...this.textBox, x: this.textBox.x + dx, y: this.textBox.y + dy };
+    if (this.quads) this.quads = this.quads.map(q => ({ ...q, x: q.x + dx, y: q.y + dy }));
     this.dirty = true;
   }
 
@@ -217,6 +229,7 @@ export class Markup {
     m.inkList = this.inkList && this.inkList.map(path => path.map(p => ({ ...p })));
     m.callout = this.callout && this.callout.map(p => ({ ...p }));
     m.textBox = this.textBox && { ...this.textBox };
+    m.quads = this.quads && this.quads.map(q => ({ ...q }));
     m.nm = randomName();
     m.move(dx, dy);
     return m;

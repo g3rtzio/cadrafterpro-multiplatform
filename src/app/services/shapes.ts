@@ -185,8 +185,12 @@ export function markupShapes(m: Markup, g: PageGeometry, shapes: Shape[]): void 
       }
       break;
     case 'Highlight':
-      shapes.push({ d: rectPath(r), fill: m.color ?? COLORS.yellow, fillOpacity: 0.5, stroke: 'none', width: 0,
-        opacity: 1, blend: 'multiply' });
+    case 'Underline':
+    case 'Squiggly':
+    case 'StrikeOut':
+    case 'Redact':
+    case 'Link':
+      textMarkupShapes(m, g, shapes);
       break;
     case 'FreeText':
       textBoxShapes(m, g, shapes);
@@ -283,4 +287,41 @@ export function textWidth(text: string, size: number): number {
   if (!measureContext) return text.length * size * 0.55;
   measureContext.font = `${size}px ${TEXT_FONT}`;
   return measureContext.measureText(text).width;
+}
+
+// Text markups (on search results): highlight, underline, squiggly, strikethrough, redaction mark, link
+function textMarkupShapes(m: Markup, g: PageGeometry, shapes: Shape[]): void {
+  const color = m.color ?? COLORS.yellow;
+  for (const q of m.quads?.length ? m.quads : [m.rect]) {
+    const r = g.rectToView(q);
+    // Text runs left to right on screen: the bottom edge is the larger y
+    const thick = Math.max(r.h * 0.07, 0.6);
+    switch (m.subtype) {
+      case 'Highlight':
+        shapes.push({ d: rectPath(r), fill: color, fillOpacity: 0.5 * m.opacity, stroke: 'none', width: 0, opacity: 1, blend: 'multiply' });
+        break;
+      case 'Underline':
+        shapes.push({ d: pathOf([{ x: r.x, y: r.y + r.h - thick }, { x: r.x + r.w, y: r.y + r.h - thick }], false),
+          fill: 'none', stroke: color, width: thick, opacity: m.opacity });
+        break;
+      case 'StrikeOut':
+        shapes.push({ d: pathOf([{ x: r.x, y: r.y + r.h * 0.55 }, { x: r.x + r.w, y: r.y + r.h * 0.55 }], false),
+          fill: 'none', stroke: color, width: thick, opacity: m.opacity });
+        break;
+      case 'Squiggly': {
+        const step = Math.max(r.h * 0.18, 1);
+        const pts: Pt[] = [];
+        for (let x = r.x, i = 0; x <= r.x + r.w + 0.01; x += step, i++) pts.push({ x, y: r.y + r.h - (i % 2 ? 0 : step) });
+        shapes.push({ d: pathOf(pts, false), fill: 'none', stroke: color, width: thick, opacity: m.opacity });
+        break;
+      }
+      case 'Redact':
+        shapes.push({ d: rectPath(r), fill: COLORS.red, fillOpacity: 0.12, stroke: COLORS.red, width: thick, opacity: 1 });
+        break;
+      case 'Link':
+        shapes.push({ d: rectPath(r), fill: COLORS.blue, fillOpacity: 0.08, stroke: COLORS.blue, width: thick,
+          dash: `${thick * 3} ${thick * 2}`, opacity: 1 });
+        break;
+    }
+  }
 }

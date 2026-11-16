@@ -1,6 +1,6 @@
 import { Injectable, effect, inject, signal, untracked } from '@angular/core';
-import { Measurement } from '../models/elements';
-import { Pt, Rect, boundsOf } from '../models/takeoff';
+import { Markup, Measurement } from '../models/elements';
+import { COLORS, Pt, Rect, boundsOf } from '../models/takeoff';
 import { DrawingStore } from './drawing.store';
 import { textWidth } from './shapes';
 
@@ -47,6 +47,8 @@ export class TextSearch {
   readonly progress = signal('');
   readonly searched = signal(false);       // a search ran (shows "No results")
   readonly truncated = signal(false);
+  // Results ticked in the list (ids): the actions menu works on them
+  readonly checked = signal<ReadonlySet<number>>(new Set());
 
   private cacheOwner: unknown = null;
   private cache = new Map<number, Promise<PageText>>();
@@ -75,6 +77,7 @@ export class TextSearch {
     this.progress.set('');
     this.searched.set(false);
     this.truncated.set(false);
+    this.checked.set(new Set());
   }
 
   async search(): Promise<void> {
@@ -84,6 +87,7 @@ export class TextSearch {
     this.results.set([]);
     this.focused.set(null);
     this.truncated.set(false);
+    this.checked.set(new Set());
     if (!regex || !s.hasDocument) {
       this.searched.set(false);
       return;
@@ -147,6 +151,114 @@ export class TextSearch {
     if (!list.length) return;
     const i = list.indexOf(this.focused() as SearchHit);
     this.focus(list[(i + delta + list.length) % list.length]);
+  }
+
+  // MARK: - Ticked results
+  isChecked(hit: SearchHit): boolean { return this.checked().has(hit.id); }
+
+  toggle(hit: SearchHit): void {
+    const next = new Set(this.checked());
+    if (next.has(hit.id)) next.delete(hit.id); else next.add(hit.id);
+    this.checked.set(next);
+  }
+
+  setAll(on: boolean): void {
+    this.checked.set(on ? new Set(this.results().map(h => h.id)) : new Set());
+  }
+
+  toggleGroup(hits: SearchHit[], on: boolean): void {
+    const next = new Set(this.checked());
+    for (const h of hits) if (on) next.add(h.id); else next.delete(h.id);
+    this.checked.set(next);
+  }
+
+  checkedHits(): SearchHit[] {
+    const ids = this.checked();
+    return this.results().filter(h => ids.has(h.id));
+  }
+
+  // Trash button: the ticked results leave the list (nothing changes in the drawing)
+  removeChecked(): void {
+    const ids = this.checked();
+    this.results.update(list => list.filter(h => !ids.has(h.id)));
+    if (this.focused() && ids.has(this.focused()!.id)) this.focused.set(null);
+    this.checked.set(new Set());
+  }
+
+  // MARK: - Actions on the ticked results (like Revu's lightning menu)
+  // Highlight, Underline, Squiggly, StrikeOut or Redact over the text of every ticked result
+  markChecked(subtype: 'Highlight' | 'Underline' | 'Squiggly' | 'StrikeOut' | 'Redact'): number {
+    const titles = { Highlight: 'Highlight', Underline: 'Underline', Squiggly: 'Squiggly', StrikeOut: 'Strikethrough', Redact: 'Redaction' };
+    const colors = { Highlight: '#FFFF00', Underline: COLORS.blue, Squiggly: COLORS.red, StrikeOut: COLORS.red, Redact: COLORS.red };
+    return this.addMarkups(hit => {
+      const m = this.newMarkup(hit, subtype, titles[subtype]);
+      m.color = colors[subtype];
+      if (subtype === 'Highlight') m.multiply = true;
+      return m;
+    });
+  }
+
+  // A link on every ticked result: to a web address or to a page of the drawing
+  linkChecked(target: { uri: string } | { page: number }): number {
+    return this.addMarkups(hit => {
+      const m = this.newMarkup(hit, 'Link', 'Hyperlink');
+      m.color = COLORS.blue;
+      if ('uri' in target) m.uri = target.uri; else m.destPage = target.page;
+      m.contents = 'uri' in target ? target.uri : `Page ${target.page + 1}`;
+      return m;
+    });
+  }
+
+  // A count of `itemId` in the middle of every ticked result (one Undo step)
+  countChecked(itemId: string): number {
+    const s = this.store;
+    const item = s.items.find(i => i.id === itemId);
+    const hits = this.checkedHits();
+    if (!item || !hits.length) return 0;
+    s.checkpoint();
+    for (const hit of hits) {
+      const b = this.boundsOf(hit);
+      const m = new Measurement('count', hit.pageIndex, item.id);
+      m.name = item.name;
+      m.lineColor = item.color;
+      m.visible = item.isVisible;
+      m.points = [{ x: b.x + b.w / 2, y: b.y + b.h / 2 }];
+      m.contents = '1 ea';
+      s.measurements.push(m);
+    }
+    s.touch();
+    s.showToast(`Added ${hits.length} ${item.name} count${hits.length === 1 ? '' : 's'}`);
+    return hits.length;
+  }
+
+  private addMarkups(make: (hit: SearchHit) => Markup): number {
+    const s = this.store;
+    const hits = this.checkedHits();
+    if (!hits.length) return 0;
+    s.checkpoint();
+    const made = hits.map(make);
+    made.forEach(m => m.updateRect());
+    s.markups.push(...made);
+    s.touch();
+    s.showToast(`Added ${made.length} ${made[0].subject} markup${made.length === 1 ? '' : 's'}`);
+    return made.length;
+  }
+
+  private newMarkup(hit: SearchHit, subtype: string, subject: string): Markup {
+    const m = new Markup(hit.pageIndex);
+    m.appMade = true;
+    m.dirty = true;
+    m.subtype = subtype;
+    m.subject = subject;
+    m.author = 'CadrafterPro';
+    m.lineWidth = 1;
+    m.contents = subtype === 'Link' ? '' : hit.match;
+    m.quads = hit.rects.map(r => ({ ...r }));
+    return m;
+  }
+
+  private boundsOf(hit: SearchHit): Rect {
+    return boundsOf(hit.rects.flatMap(r => [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y + r.h }]));
   }
 
   // The query as a regular expression: spaces match any run of spaces or line breaks

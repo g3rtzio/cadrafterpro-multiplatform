@@ -71,6 +71,7 @@ interface Snapshot {
   current: Measurement | null;
   countSession: Measurement[];
   estimate: EstimateData;
+  pageNames: Map<number, string>;
 }
 
 // Markup fields that, when Undo changes them, mean the markup must be written again
@@ -402,6 +403,7 @@ export class DrawingStore {
       current: this.current,
       countSession: [...this.countSession],
       estimate: structuredClone(this.estimate),
+      pageNames: new Map(this.pageNames),
     };
   }
 
@@ -423,6 +425,7 @@ export class DrawingStore {
     this.current = snap.current;
     this.countSession = snap.countSession;
     this.estimate = snap.estimate;
+    this.pageNames = snap.pageNames ?? this.pageNames;
     if (this.propertiesKey && !this.rowExists(this.propertiesKey)) this.propertiesKey = null;
     this.selection = this.selection.filter(el =>
       el instanceof Measurement ? this.measurements.includes(el) : this.markups.includes(el));
@@ -487,9 +490,27 @@ export class DrawingStore {
   }
 
   renamePage(index: number, name: string): void {
+    this.checkpoint('page-name');
     const trimmed = name.trim();
     if (trimmed) this.pageNames.set(index, trimmed); else this.pageNames.delete(index);
     this.touch();
+  }
+
+  // Create Page Labels: several pages at once (one Undo step)
+  renamePages(names: Map<number, string>): void {
+    if (names.size === 0) return;
+    this.checkpoint();
+    for (const [index, name] of names) {
+      const trimmed = name.trim();
+      if (trimmed) this.pageNames.set(index, trimmed);
+    }
+    this.touch();
+  }
+
+  // Name written into the PDF as its page label ('' = the plain page number)
+  private labelToSave(index: number): string {
+    const label = this.pageNames.get(index) ?? this.pageLabels[index] ?? '';
+    return label === String(index + 1) ? '' : label;
   }
 
   // MARK: - Page scale
@@ -1202,7 +1223,9 @@ export class DrawingStore {
       }),
       author: 'CadrafterPro',
       appData: JSON.stringify(this.estimate),
-      pageLabels: this.pagesChanged ? this.pages.map((_, i) => this.pageLabels[i] ?? '') : undefined,
+      // Page names (renamed, Create Page Labels) and the order of the pages go into /PageLabels
+      pageLabels: this.pagesChanged || this.pageNames.size
+        ? this.pages.map((_, i) => this.labelToSave(i)) : undefined,
     });
     this.removed = [];
     return bytes;
@@ -1560,6 +1583,7 @@ export class DrawingStore {
       snap.removed = snap.removed.filter(keep).map(r => ({ ...r, pageIndex: map(r.pageIndex) }));
       snap.viewports = snap.viewports.filter(keep).map(v => ({ ...v, pageIndex: map(v.pageIndex) }));
       snap.pageScales = remapScales(snap.pageScales);
+      snap.pageNames = remapNames(snap.pageNames ?? new Map());
       snap.current = null;
       snap.countSession = [];
     };
