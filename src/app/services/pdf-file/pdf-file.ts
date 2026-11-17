@@ -1,6 +1,6 @@
 import {
   PDFArray, PDFDict, PDFDocument, PDFFont, PDFHexString, PDFName, PDFNumber, PDFObject, PDFPage, PDFRawStream,
-  PDFRef, PDFStream, PDFString, StandardFonts,
+  PDFRef, PDFStream, PDFString, StandardFonts, decodePDFRawStream,
 } from 'pdf-lib';
 import {
   Cubic, LINE_HEIGHT, Markup, Measurement, TEXT_PADDING, cloudCurves, readableAngleAtHalfLength, ellipseCurves, lineEnding, randomName, wrapText,
@@ -214,12 +214,43 @@ function jpegIn(form: PDFDict, depth: number): string | null {
           ? (filter.lookup(0) as PDFName).decodeText() : null;
       const space = nameOf(obj.dict, 'ColorSpace');
       if (name === 'DCTDecode' && space !== 'DeviceCMYK') return 'data:image/jpeg;base64,' + base64(obj.contents);
+      if (name === 'FlateDecode' && space === 'DeviceRGB') {
+        const png = maskedImageUrl(obj);
+        if (png) return png;
+      }
     } else if (subtype === 'Form' && depth < 3) {
       const inner = jpegIn(obj.dict, depth + 1);
       if (inner) return inner;
     }
   }
   return null;
+}
+
+// RGB image with an 8-bit soft mask (a confirmed overlay written by the app) as a PNG data URL
+function maskedImageUrl(image: PDFRawStream): string | null {
+  try {
+    const width = image.dict.lookup(PDFName.of('Width'), PDFNumber).asNumber();
+    const height = image.dict.lookup(PDFName.of('Height'), PDFNumber).asNumber();
+    if (image.dict.has(PDFName.of('DecodeParms')) || width * height > 40_000_000) return null;
+    const rgb = decodePDFRawStream(image).decode();
+    const maskObj = image.dict.lookup(PDFName.of('SMask'));
+    const alpha = maskObj instanceof PDFRawStream ? decodePDFRawStream(maskObj).decode() : null;
+    if (rgb.length < width * height * 3 || (alpha && alpha.length < width * height)) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    const data = ctx.createImageData(width, height);
+    for (let p = 0, j = 0; p < width * height; p++, j += 3) {
+      data.data[p * 4] = rgb[j]; data.data[p * 4 + 1] = rgb[j + 1]; data.data[p * 4 + 2] = rgb[j + 2];
+      data.data[p * 4 + 3] = alpha ? alpha[p] : 255;
+    }
+    ctx.putImageData(data, 0, 0);
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
 }
 
 export function base64(bytes: Uint8Array): string {
@@ -289,7 +320,7 @@ export async function writePdf(lib: PDFDocument, input: SaveInput): Promise<Uint
       m.dirty = false;
       continue;
     }
-    if (!m.ref && !m.template?.ref && m.imageJpeg) {
+    if (!m.ref && !m.template?.ref && (m.imageJpeg || m.imagePixels)) {
       // New snapshot pasted in the app: an image stamp (Revu shows it as an image markup)
       m.ref = lib.context.register(imageStampDict(lib, m, input.author));
       page.node.addAnnot(m.ref);
@@ -386,11 +417,30 @@ function writeMarkup(lib: PDFDocument, dict: PDFDict, m: Markup): void {
 // on rotated pages); without it the picture fills the rectangle.
 function imageStampDict(lib: PDFDocument, m: Markup, author: string): PDFDict {
   const r = m.rect;
-  const jpeg = jpegInfo(m.imageJpeg!);
-  const image = lib.context.register(lib.context.stream(m.imageJpeg!, {
-    Type: 'XObject', Subtype: 'Image', Width: jpeg.width, Height: jpeg.height,
-    ColorSpace: jpeg.components === 1 ? 'DeviceGray' : 'DeviceRGB', BitsPerComponent: 8, Filter: 'DCTDecode',
-  }));
+  let image: PDFRef;
+  if (m.imagePixels) {
+    // Picture with transparency (confirmed overlay): RGB image + its alpha as a soft mask
+    const { width, height, rgba } = m.imagePixels;
+    const rgb = new Uint8Array(width * height * 3);
+    const alpha = new Uint8Array(width * height);
+    for (let i = 0, j = 0, k = 0; i < rgba.length; i += 4) {
+      rgb[j++] = rgba[i]; rgb[j++] = rgba[i + 1]; rgb[j++] = rgba[i + 2];
+      alpha[k++] = rgba[i + 3];
+    }
+    const mask = lib.context.register(lib.context.flateStream(alpha, {
+      Type: 'XObject', Subtype: 'Image', Width: width, Height: height, ColorSpace: 'DeviceGray', BitsPerComponent: 8,
+    }));
+    image = lib.context.register(lib.context.flateStream(rgb, {
+      Type: 'XObject', Subtype: 'Image', Width: width, Height: height, ColorSpace: 'DeviceRGB', BitsPerComponent: 8,
+      SMask: mask,
+    }));
+  } else {
+    const jpeg = jpegInfo(m.imageJpeg!);
+    image = lib.context.register(lib.context.stream(m.imageJpeg!, {
+      Type: 'XObject', Subtype: 'Image', Width: jpeg.width, Height: jpeg.height,
+      ColorSpace: jpeg.components === 1 ? 'DeviceGray' : 'DeviceRGB', BitsPerComponent: 8, Filter: 'DCTDecode',
+    }));
+  }
   const [a, b, c, d, e, f] = (m.imageMatrix ?? [r.w, 0, 0, r.h, r.x, r.y]).map(num);
   const form = lib.context.register(lib.context.stream(`q ${a} ${b} ${c} ${d} ${e} ${f} cm /Im0 Do Q`, {
     Type: 'XObject', Subtype: 'Form',
@@ -399,7 +449,7 @@ function imageStampDict(lib: PDFDocument, m: Markup, author: string): PDFDict {
   }));
   const date = PDFString.of(dateText(new Date()));
   return lib.context.obj({
-    Type: 'Annot', Subtype: 'Stamp', Name: 'Snapshot',
+    Type: 'Annot', Subtype: 'Stamp', Name: m.imagePixels ? 'Overlay' : 'Snapshot',
     Rect: [r.x, r.y, r.x + r.w, r.y + r.h],
     Subj: PDFHexString.fromText(m.subject || 'Snapshot'),
     Contents: PDFHexString.fromText(m.contents),

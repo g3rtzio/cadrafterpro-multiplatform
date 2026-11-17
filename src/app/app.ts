@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/cor
 import { EstimateView } from './components/estimate-view/estimate-view';
 import { LayoutsPanel } from './components/layouts-panel/layouts-panel';
 import { TemplatesView } from './components/templates-view/templates-view';
+import { FilterBuilder } from './components/filter-builder/filter-builder';
 import { PlanView } from './components/plan-view/plan-view';
 import { SidePanel } from './components/side-panel/side-panel';
 import { Ribbon } from './components/ribbon/ribbon';
@@ -21,7 +22,7 @@ import { Icon } from './components/icon/icon';
 // in the middle, the status bar at the bottom and the properties panel on the right
 @Component({
   selector: 'app-root',
-  imports: [Icon, OcrPanel, ColumnsDialog, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
+  imports: [Icon, OcrPanel, ColumnsDialog, FilterBuilder, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'app',
@@ -40,7 +41,17 @@ import { Icon } from './components/icon/icon';
           <button [class.active]="sidebarMode() === 'elements'" (click)="sidebarMode.set('elements')">Elements</button>
           <button [class.active]="sidebarMode() === 'pages'" (click)="sidebarMode.set('pages')">Pages</button>
         </div>
-        @if (sidebarMode() === 'elements') { <app-takeoff-tree /> } @else { <app-thumbnails /> }
+        <div class="side-search sidebar-search">
+          <app-icon class="icon small secondary" name="search" />
+          <input type="text" [placeholder]="sidebarMode() === 'elements' ? 'Find page or element' : 'Find page'"
+                 [value]="sidebarFilter()" (input)="sidebarFilter.set($any($event.target).value)"
+                 (keydown.escape)="sidebarFilter.set('')" />
+          @if (sidebarFilter()) {
+            <button class="icon-button" title="Clear" (click)="sidebarFilter.set('')"><app-icon class="icon small" name="close" /></button>
+          }
+        </div>
+        @if (sidebarMode() === 'elements') { <app-takeoff-tree [filter]="sidebarFilter()" /> }
+        @else { <app-thumbnails [filter]="sidebarFilter()" /> }
       </aside>
     }
 
@@ -79,6 +90,7 @@ import { Icon } from './components/icon/icon';
         </div>
         @if (s.ribbonTab === 'Estimating') { <app-estimate-view /> }
         @if (s.ribbonTab === 'Templates') { <app-templates-view /> }
+        @if (s.ribbonTab === 'Cost Database') { <app-templates-view [database]="true" /> }
         <!-- OCR panel (text recognition) over the plan -->
         @if (ocr.panelOpen()) { <app-ocr-panel /> }
 
@@ -106,6 +118,9 @@ import { Icon } from './components/icon/icon';
     @for (key of s.propertiesKey ? [s.propertiesKey] : []; track key) {
       <app-properties-dialog [rowKey]="key" />
     }
+    @if (s.filterOpen) {
+      <app-filter-builder />
+    }
     @if (s.columnsOpen) {
       <app-columns-dialog />
     }
@@ -117,6 +132,7 @@ export class App {
   readonly showSidebar = signal(true);
   readonly showInspector = signal(true);
   readonly sidebarMode = signal<'elements' | 'pages'>('elements');
+  readonly sidebarFilter = signal('');               // search box above the Elements / Pages list
 
   constructor() {
   }

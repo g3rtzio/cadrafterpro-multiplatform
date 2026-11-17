@@ -2,6 +2,8 @@
 // and every Part has a list of properties. A property has a formula; its result is calculated.
 //   [Name]  → value of the property "Name" of the same element
 //   [..]    → value of the property with the same name on the parent (a Part's element)
+//   [Parts:Name] → sum of the property "Name" of the parts right below (each one already
+//                  includes its own parts), e.g. "[Qty] * [Price Each] + [Parts:Price Total]"
 //   + - * / ( ) and numbers. Anything else is plain text.
 
 export type PropType = 'number' | 'text';
@@ -77,11 +79,34 @@ function estimatingProps(qtyFormula: string, qtyUnits: string): PropertyDef[] {
     prop('Cost Each', g, '', { inputUnits: '$', units: '$' }),
     prop('Markup %', g, '', { inputUnits: '%', units: '%' }),
     text('Cost Type', g),
-    prop('Cost Total', g, '[Qty] * [Cost Each]', { inputUnits: '$', units: '$' }),
+    prop('Cost Total', g, TOTAL_FORMULAS['Cost Total'], { inputUnits: '$', units: '$' }),
     prop('Markup Each', g, '[Cost Each] * ([Markup %] / 100)'),
-    prop('Markup Total', g, '[Qty] * [Markup Each]', { inputUnits: '$', units: '$' }),
+    prop('Markup Total', g, TOTAL_FORMULAS['Markup Total'], { inputUnits: '$', units: '$' }),
     prop('Price Each', g, '[Cost Each] + [Markup Each]', { inputUnits: '$', units: '$' }),
-    prop('Price Total', g, '[Qty] * [Price Each]', { inputUnits: '$', units: '$' }),
+    prop('Price Total', g, TOTAL_FORMULAS['Price Total'], { inputUnits: '$', units: '$' }),
+  ];
+}
+
+// Totals of a row add up the totals of its parts (the price of an element includes its parts)
+const TOTAL_FORMULAS: Record<string, string> = {
+  'Cost Total': '[Qty] * [Cost Each] + [Parts:Cost Total]',
+  'Markup Total': '[Qty] * [Markup Each] + [Parts:Markup Total]',
+  'Price Total': '[Qty] * [Price Each] + [Parts:Price Total]',
+};
+const OLD_TOTAL_FORMULAS: Record<string, string> = {
+  'Cost Total': '[Qty] * [Cost Each]', 'Markup Total': '[Qty] * [Markup Each]', 'Price Total': '[Qty] * [Price Each]',
+};
+
+// Volume of an element: calculated with formulas from what was measured and its Width / Depth
+// (feet → cubic feet; change the formula to "/ 27" for cubic yards)
+function volumeProps(kind: ElementKind): PropertyDef[] {
+  const t = 'Takeoff Data';
+  const formula = { area: '[Area] * [Depth]', length: '[Linear Total] * [Width] * [Depth]', count: '[Point Count] * [Volume Each]' }[kind];
+  return [
+    ...(kind === 'length' ? [prop('Width', t, '', { inputUnits: 'FT', units: 'FT' })] : []),
+    ...(kind === 'count' ? [prop('Volume Each', t, '', { inputUnits: 'CF', units: 'CF' })]
+      : [prop('Depth', t, '', { inputUnits: 'FT', units: 'FT' })]),
+    prop('Volume', t, formula, { units: 'CF' }),
   ];
 }
 
@@ -97,13 +122,14 @@ export function elementTemplate(kind: ElementKind, name: string, markupType?: st
   const typeName = markupType || { area: 'Area', length: 'Linear', count: 'Count' }[kind];
   const t = 'Takeoff Data';
   return [
-    text('Name', 'Item', name), text('Type', 'Item', typeName), text('Description', 'Item'), text('Item #', 'Item'),
+    text('Name', 'Item', name), text('Type', 'Item', typeName), text('Description', 'Item'),
     ...estimatingProps(qty[0], qty[1]),
     prop('Area', t, '', { units: 'SF', takeoff: true }),
     prop('Linear Total', t, '', { units: 'LF', takeoff: true }),
     prop('Segment Count', t, '', { decimals: 0, takeoff: true }),
     prop('Point Count', t, '', { decimals: 0, takeoff: true }),
     prop('Section Count', t, '', { units: 'EA', decimals: 0, takeoff: true }),
+    ...volumeProps(kind),
     ...wbsProps(),
   ];
 }
@@ -112,13 +138,32 @@ export function elementTemplate(kind: ElementKind, name: string, markupType?: st
 export function partTemplate(name = 'New Part'): PropertyDef[] {
   const t = 'Takeoff Data';
   return [
-    text('Name', 'Item', name), text('Type', 'Item', 'Part'), text('Description', 'Item'), text('Item #', 'Item'),
+    text('Name', 'Item', name), text('Type', 'Item', 'Part'), text('Description', 'Item'),
     ...estimatingProps('[..]', ''),
     prop('Area', t, '[..]'), prop('Linear Total', t, '[..]'),
     prop('Segment Count', t, '[..]'), prop('Point Count', t, '[..]'),
     prop('Section Count', t, '[..]', { inputUnits: 'EA', units: 'EA' }),
+    prop('Volume', t, '[..]', { units: 'CF' }),
     ...wbsProps(),
   ];
+}
+
+// Lists saved before these changes: no "Item #", Volume added, totals that include the parts.
+// Changes the list in place; running it again does nothing. kind = null for a part.
+export function upgradeProps(props: PropertyDef[], kind: ElementKind | null): PropertyDef[] {
+  const item = props.findIndex(p => p.name === 'Item #');
+  if (item >= 0) props.splice(item, 1);
+  for (const [name, formula] of Object.entries(TOTAL_FORMULAS)) {
+    const def = findProp(props, name);
+    if (def && def.formula.replace(/\s+/g, ' ').trim() === OLD_TOTAL_FORMULAS[name]) def.formula = formula;
+  }
+  if (!findProp(props, 'Volume')) {
+    const fresh = kind ? volumeProps(kind) : [prop('Volume', 'Takeoff Data', '[..]', { units: 'CF' })];
+    const add = fresh.filter(p => !findProp(props, p.name));
+    const after = props.findIndex(p => p.name === 'Section Count');
+    props.splice(after >= 0 ? after + 1 : props.length, 0, ...add);
+  }
+  return props;
 }
 
 export function defaultColumns(): ColumnDef[] {
@@ -148,6 +193,7 @@ export interface EvalNode {
   props: PropertyDef[];
   takeoff: TakeoffValues | null;   // elements: values measured on the plan
   parent: EvalNode | null;         // parts: the element (or part) they hang from
+  children?: () => EvalNode[];     // parts right below (for [Parts:…])
 }
 
 export interface EvalResult {
@@ -204,11 +250,20 @@ export function evaluate(node: EvalNode, name: string, seen: Set<string> = new S
   }
 }
 
-// [..] → same property on the parent; [Name] → another property of this element
+// [..] → same property on the parent; [Parts:Name] → sum over the parts below; [Name] → another property
 function reference(node: EvalNode, def: PropertyDef, ref: string, seen: Set<string>): EvalResult {
   if (ref.trim() === '..') {
     if (!node.parent) return { value: 0, units: '', error: 'No parent for [..]' };
     return evaluate(node.parent, def.name, seen);
+  }
+  const sum = /^\s*parts\s*:(.+)$/i.exec(ref);
+  if (sum) {
+    let total = 0;
+    for (const child of node.children?.() ?? []) {
+      const r = evaluate(child, sum[1], seen);
+      if (typeof r.value === 'number') total += r.value; else total += Number(r.value) || 0;
+    }
+    return { value: total, units: def.units };
   }
   return evaluate(node, ref, seen);
 }

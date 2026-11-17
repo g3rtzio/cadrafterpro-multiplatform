@@ -1,10 +1,10 @@
 import { NgTemplateOutlet } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { PROPERTY_GROUPS, PropertyDef, evaluate, formatResult } from '../../models/estimate';
 import { TAKEOFF_KINDS, TakeoffKind, kindIcon, kindTitle } from '../../models/takeoff';
-import { TakeoffTemplate, TemplatePart } from '../../models/templates';
+import { PART_DRAG_TYPE, TakeoffTemplate, TemplatePart } from '../../models/templates';
 import { DrawingStore } from '../../services/drawing.store/drawing.store';
-import { TemplateLibrary } from '../../services/template-library/template-library';
+import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { AutoFocus } from '../auto-focus/auto-focus';
 import { Icon } from '../icon/icon';
 
@@ -13,6 +13,9 @@ import { Icon } from '../icon/icon';
 // Double-click a template (or press Use Template) to measure with it on the plan; a part template
 // is added under the item selected in the estimate or on the plan.
 // Drag templates and folders onto a folder to move them, or onto the empty area for the top level.
+// Parts dragged from the side bar (part templates or Cost Database parts) onto a template or one of its
+// parts are copied into it as a child part.
+// The "Cost Database" tab is this same view with [database]="true": a library of priced parts only.
 @Component({
   selector: 'app-templates-view',
   imports: [Icon, AutoFocus, NgTemplateOutlet],
@@ -28,10 +31,12 @@ import { Icon } from '../icon/icon';
     <!-- Left: the library tree -->
     <section class="templates-tree" (click)="lib.select(null)"
              (dragover)="allowDrop($event, null)" (drop)="drop($event, null)">
-      <div class="templates-heading">Templates</div>
+      <div class="templates-heading">{{ lib.title }}</div>
       <ng-container *ngTemplateOutlet="folderLevel; context: { $implicit: null, depth: 0 }" />
       @if (lib.data.folders.length === 0 && lib.data.templates.length === 0) {
-        <div class="secondary small templates-empty">No templates yet. Use New Template, or Add from Document.</div>
+        <div class="secondary small templates-empty">
+          {{ lib.partsOnly ? 'No parts yet. Use New Part.' : 'No templates yet. Use New Template, or Add from Document.' }}
+        </div>
       }
     </section>
 
@@ -44,9 +49,9 @@ import { Icon } from '../icon/icon';
           <app-icon class="icon" [style.color]="t.color" [name]="t.isPart ? 'widgets' : icon(t.kind)" />
           <h2>{{ part ? lib.partName(part) : t.name }}</h2>
           @if (part) { <span class="secondary">Part of {{ t.name }}</span> }
-          @if (t.isPart && !part) { <span class="secondary">Part template</span> }
+          @if (t.isPart && !part) { <span class="secondary">{{ lib.partsOnly ? 'Part' : 'Part template' }}</span> }
           <span class="spacer"></span>
-          @if (part) {
+          @if (part && !lib.partsOnly) {
             <button title="Save this part (and the parts below it) as its own part template" (click)="lib.savePartAsTemplate()">
               <app-icon class="icon small" name="widgets" /> Save as Part Template
             </button>
@@ -109,8 +114,14 @@ import { Icon } from '../icon/icon';
       } @else {
         <div class="estimate-empty">
           <app-icon class="icon big" name="inventory_2" />
-          <div class="estimate-empty-title">No Template Selected</div>
-          <div class="secondary">Select a template to see its properties, or double-click it to measure with it. Part templates are added under the selected item of the estimate.</div>
+          @if (lib.partsOnly) {
+            <div class="estimate-empty-title">No Part Selected</div>
+            <div class="secondary">Select a part to see its prices. Drag it from the side bar onto an element of the estimate,
+              or use Update Prices to copy these prices to the parts of the document with the same name.</div>
+          } @else {
+            <div class="estimate-empty-title">No Template Selected</div>
+            <div class="secondary">Select a template to see its properties, or double-click it to measure with it. Part templates are added under the selected item of the estimate.</div>
+          }
         </div>
       }
     </section>
@@ -143,6 +154,8 @@ import { Icon } from '../icon/icon';
       @for (t of lib.templatesIn(parentId); track t.id) {
         <div class="tree-row" [class.selected]="isSelected('template', t.id)" [style.padding-left.px]="4 + depth * 16"
              draggable="true" (dragstart)="dragStart($event, 'template', t.id)"
+             (dragover)="partOver($event, t.id)" (dragleave)="dropTarget.set(undefined)" (drop)="partDrop($event, t, null)"
+             [class.drop-target]="dropTarget() === t.id"
              (click)="lib.select({ type: 'template', id: t.id }); $event.stopPropagation()"
              (dblclick)="lib.useTemplate(t.id)"
              [title]="t.isPart ? 'Part template: double-click to add it to the selected item of the estimate' : 'Double-click to measure with it'">
@@ -163,6 +176,8 @@ import { Icon } from '../icon/icon';
     <ng-template #partLevel let-t let-parentId="parentId" let-depth="depth">
       @for (p of parts(t, parentId); track p.id) {
         <div class="tree-row" [class.selected]="isSelected('part', p.id)" [style.padding-left.px]="4 + depth * 16"
+             (dragover)="partOver($event, p.id)" (dragleave)="dropTarget.set(undefined)" (drop)="partDrop($event, t, p.id)"
+             [class.drop-target]="dropTarget() === p.id"
              (click)="lib.select({ type: 'part', templateId: t.id, id: p.id }); $event.stopPropagation()">
           <button class="disclosure" [style.visibility]="parts(t, p.id).length ? 'visible' : 'hidden'"
                   (click)="lib.toggle(p.id); $event.stopPropagation()">
@@ -180,7 +195,10 @@ import { Icon } from '../icon/icon';
 })
 export class TemplatesView {
   readonly store = inject(DrawingStore);
-  readonly library = inject(TemplateLibrary);
+  readonly database = input(false);                 // true = Cost Database tab
+  private readonly templates = inject(TemplateLibrary);
+  private readonly costDatabase = inject(CostDatabase);
+  get library(): TemplateLibrary { return this.database() ? this.costDatabase : this.templates; }
   readonly kinds = TAKEOFF_KINDS;
   readonly dropTarget = signal<string | null | undefined>(undefined);   // undefined = not dragging
   private readonly lib = computed(() => this.library.watch());
@@ -211,11 +229,14 @@ export class TemplatesView {
   example(owner: { props: PropertyDef[] }, p: PropertyDef): string {
     const t = this.library.selectedTemplate;
     const zero = { 'Area': 0, 'Linear Total': 0, 'Segment Count': 0, 'Point Count': 0, 'Section Count': 0 };
+    // Parts right below, for [Parts:…] totals
+    const children = (o: { props: PropertyDef[] }, depth: number) => () => !t || depth > 20 ? [] :
+      t.parts.filter(x => x.parentId === (o === t ? null : (o as TemplatePart).id)).map(x => node(x, depth + 1));
     const node = (o: { props: PropertyDef[] }, depth = 0): Parameters<typeof evaluate>[0] => {
-      if (!t || o === t || depth > 20) return { props: o.props, takeoff: zero, parent: null };
+      if (!t || o === t || depth > 20) return { props: o.props, takeoff: zero, parent: null, children: children(o, depth) };
       const part = o as TemplatePart;
       const parent = part.parentId ? t.parts.find(x => x.id === part.parentId) : t;
-      return { props: o.props, takeoff: null, parent: parent ? node(parent, depth + 1) : null };
+      return { props: o.props, takeoff: null, parent: parent ? node(parent, depth + 1) : null, children: children(o, depth) };
     };
     const result = evaluate(node(owner), p.name);
     return result.error ? '' : formatResult(result, p.decimals);
@@ -237,6 +258,26 @@ export class TemplatesView {
     event.stopPropagation();
     event.dataTransfer?.setData('application/x-cadrafter-template', JSON.stringify({ kind, id }));
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  }
+
+  // A part from the side bar over a template or a part of one
+  partOver(event: DragEvent, id: string): void {
+    if (!event.dataTransfer?.types.includes(PART_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    this.dropTarget.set(id);
+  }
+
+  partDrop(event: DragEvent, t: TakeoffTemplate, parentId: string | null): void {
+    const text = event.dataTransfer?.getData(PART_DRAG_TYPE);
+    if (!text) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.dropTarget.set(undefined);
+    const { database, id } = JSON.parse(text) as { database: boolean; id: string };
+    const source = (database ? this.costDatabase : this.templates).template(id);
+    if (source) this.library.addPartToTemplate(source, t.id, parentId);
   }
 
   allowDrop(event: DragEvent, folderId: string | null): void {

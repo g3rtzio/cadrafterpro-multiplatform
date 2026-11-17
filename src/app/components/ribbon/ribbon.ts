@@ -3,7 +3,7 @@ import { COLORS, SCALE_GROUPS, TakeoffKind, kindIcon, kindTitle } from '../../mo
 import { DrawingStore, RibbonTab } from '../../services/drawing.store/drawing.store';
 import { MARKUP_TOOLS, MarkupTools } from '../../services/markup-tools/markup-tools';
 import { OcrService } from '../../services/ocr/ocr';
-import { TemplateLibrary } from '../../services/template-library/template-library';
+import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { Icon } from '../icon/icon';
 
 // Ribbon-style top bar with tabs (Home, Estimating, Templates) — port of RibbonView.swift
@@ -218,6 +218,15 @@ import { Icon } from '../icon/icon';
                   <button class="menu-item" [disabled]="!s.canAddSubItem" (click)="openMenu.set(null); s.newPart(true)">
                     As Sub-Item
                   </button>
+                  @if (costParts().length) {
+                    <div class="menu-divider"></div>
+                    <div class="menu-header">Cost Database (under the selected row)</div>
+                    @for (t of costParts(); track t.id) {
+                      <button class="menu-item" [disabled]="!s.canAddSubItem" (click)="openMenu.set(null); costDatabase.addPartToDocument(t)">
+                        <app-icon class="icon small" style="color: #ff9500" name="database" />{{ t.name }}
+                      </button>
+                    }
+                  }
                   @if (partTemplates().length) {
                     <div class="menu-divider"></div>
                     <div class="menu-header">Part Templates (under the selected row)</div>
@@ -241,10 +250,19 @@ import { Icon } from '../icon/icon';
             <button class="ribbon-button" title="Columns of the estimate" [disabled]="!s.hasDocument" (click)="s.openColumns()">
               <app-icon class="icon" name="view_column" /><span>Columns</span>
             </button>
+            <button class="ribbon-button" [class.active]="s.filterActive" title="Filter Builder: show only the rows that pass conditions"
+                    [disabled]="!s.hasDocument" (click)="s.openFilter()">
+              <app-icon class="icon accent" name="filter_alt" /><span>Filter</span>
+            </button>
+            @if (s.filterActive) {
+              <button class="ribbon-button" title="Show every row again" (click)="s.setEstimateFilter(null)">
+                <app-icon class="icon" name="filter_alt_off" /><span>Clear Filter</span>
+              </button>
+            }
           </div>
           <div class="ribbon-group-title">Items</div>
         </div>
-      } @else {
+      } @else if (s.ribbonTab === 'Templates') {
         <!-- Templates tab: the template library (see templates-view) -->
         @let lib = library.watch();
         <div class="ribbon-group">
@@ -332,6 +350,64 @@ import { Icon } from '../icon/icon';
           </div>
           <div class="ribbon-group-title">Share</div>
         </div>
+      } @else {
+        <!-- Cost Database tab: a library of priced parts only (see templates-view with [database]) -->
+        @let db = costDatabase.watch();
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" title="New Folder" (click)="db.newFolder()">
+              <app-icon class="icon" [style.color]="colors.yellow" name="create_new_folder" /><span>New Folder</span>
+            </button>
+            <button class="ribbon-button" title="New part in the Cost Database" (click)="db.newPartTemplate()">
+              <app-icon class="icon" [style.color]="colors.orange" name="add_box" /><span>New Part</span>
+            </button>
+            <button class="ribbon-button" title="New part under the selected part (added together with it)"
+                    [disabled]="!db.selectedTemplate" (click)="db.newPart()">
+              <app-icon class="icon" [style.color]="colors.orange" name="subdirectory_arrow_right" /><span>Sub-Part</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Library</div>
+        </div>
+
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" title="Add the selected part under the item selected in the estimate"
+                    [disabled]="!s.hasDocument || !db.selectedTemplate" (click)="db.useTemplate()">
+              <app-icon class="icon" [style.color]="colors.green" name="play_circle" /><span>Add to Item</span>
+            </button>
+            <button class="ribbon-button" title="Duplicate the selected part"
+                    [disabled]="!db.selectedTemplate || db.selection?.type !== 'template'" (click)="db.duplicate()">
+              <app-icon class="icon" name="content_copy" /><span>Duplicate</span>
+            </button>
+            <button class="ribbon-button" title="Delete the selected folder or part"
+                    [disabled]="!db.selection" (click)="db.deleteSelection()">
+              <app-icon class="icon" [style.color]="colors.red" name="delete" /><span>Delete</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Parts</div>
+        </div>
+
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" [disabled]="!s.hasDocument" (click)="db.updateDocumentPrices()"
+                    title="Copy the prices of the Cost Database to every part of this document with the same name">
+              <app-icon class="icon" [style.color]="colors.green" name="price_change" /><span>Update Prices</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Document</div>
+        </div>
+
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" title="Add parts from a .json file" (click)="db.importLibrary()">
+              <app-icon class="icon accent" name="upload_file" /><span>Import</span>
+            </button>
+            <button class="ribbon-button" title="Save the whole Cost Database as a .json file" (click)="db.exportLibrary()">
+              <app-icon class="icon accent" name="download" /><span>Export</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Share</div>
+        </div>
       }
     </div>
   `,
@@ -342,12 +418,14 @@ export class Ribbon {
   readonly markupTools = MARKUP_TOOLS;
   readonly ocr = inject(OcrService);
   readonly library = inject(TemplateLibrary);
+  readonly costDatabase = inject(CostDatabase);
 
   // Part templates of the library, offered in the Estimating New Part menu
   partTemplates() { return this.library.watch().data.templates.filter(t => t.isPart); }
+  costParts() { return this.costDatabase.watch().data.templates.filter(t => t.isPart).sort((a, b) => a.name.localeCompare(b.name)); }
   readonly openFile = output<void>();
   readonly openMenu = signal<string | null>(null);
-  readonly tabs: RibbonTab[] = ['Home', 'Estimating', 'Templates'];
+  readonly tabs: RibbonTab[] = ['Home', 'Estimating', 'Templates', 'Cost Database'];
   readonly scaleGroups = SCALE_GROUPS;
   readonly colors = COLORS;
   readonly takeoffs: { kind: TakeoffKind; color: string }[] = [

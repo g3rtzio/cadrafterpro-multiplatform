@@ -1,12 +1,15 @@
-import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
 import { DrawingStore, OverlayState } from '../../services/drawing.store/drawing.store';
+import { captureOverlay } from '../../services/snapshot/snapshot';
 import { Icon } from '../icon/icon';
 
 const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'];
 
 // Overlay controls (like Revu's Overlay Pages): which page goes underneath and which on top,
 // the color of each one, and how the page on top is moved, scaled and rotated to line up.
-// It floats in the top-right corner of the plan pane.
+// It floats in the top-right corner of the plan pane. With Move on, the page on top is dragged on
+// the plan, scaled by its corner handles and rotated by the round handle above it.
+// Confirm keeps the page on top over the base page as an "Overlay" item (saved in the PDF).
 @Component({
   selector: 'app-overlay-panel',
   imports: [Icon],
@@ -36,6 +39,8 @@ const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'
     .buttons { display: flex; gap: 6px; flex-wrap: wrap; }
     .buttons button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .hint { font-size: 11px; color: var(--secondary); margin: 0; }
+    .confirm { border-top: 1px solid var(--border); padding-top: 8px; }
+    .confirm .primary { flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; }
   `],
   template: `
     @let s = store.watch();
@@ -88,9 +93,9 @@ const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'
         <span class="value">{{ (o.opacity * 100).toFixed(0) }}%</span>
       </label>
       <label class="row">Scale
-        <input type="range" min="0.5" max="2" step="0.001" [value]="o.scale" (input)="update({ scale: +value($event) })" />
+        <input type="range" min="0.1" max="4" step="0.001" [value]="o.scale" (input)="update({ scale: +value($event) })" />
         <input class="value" type="number" step="0.1" min="10" max="400" [value]="+(o.scale * 100).toFixed(1)"
-               (change)="update({ scale: clamp(+value($event) / 100, 0.1, 4) })" />
+               (change)="update({ scale: clamp(+value($event) / 100, 0.05, 10) })" />
       </label>
       <label class="row">Rotation
         <input type="range" min="-180" max="180" step="0.1" [value]="o.rotation" (input)="update({ rotation: +value($event) })" />
@@ -110,14 +115,37 @@ const COLORS = ['#FF3B30', '#007AFF', '#34C759', '#FF9500', '#AF52DE', '#000000'
         }
       </div>
       @if (o.adjusting) {
-        <p class="hint">Drag on the plan to move the page on top. Arrows nudge it 1 px, Shift + arrows 10 px.</p>
+        <p class="hint">Drag on the plan to move the page on top, drag a corner to scale it and the round handle to
+          rotate it. Arrows nudge it 1 px, Shift + arrows 10 px.</p>
       }
+      <div class="buttons confirm">
+        <button class="primary" [disabled]="busy()" title="Keep the page on top over the base page as an Overlay item"
+                (click)="confirm(o)">
+          <app-icon class="icon small" name="check_circle" /> {{ busy() ? 'Adding…' : 'Confirm Overlay' }}
+        </button>
+        <button (click)="store.closeOverlay()">Cancel</button>
+      </div>
     }
   `,
 })
 export class OverlayPanel {
   readonly store = inject(DrawingStore);
   readonly colors = COLORS;
+  readonly busy = signal(false);
+
+  async confirm(o: OverlayState): Promise<void> {
+    const s = this.store;
+    const base = s.pages[o.baseIndex], top = s.pages[o.sourceIndex];
+    if (!base || !top || this.busy()) return;
+    this.busy.set(true);
+    try {
+      const picture = await captureOverlay(o, base, top);
+      if (picture) s.confirmOverlay(picture);
+      else s.showToast("Couldn't draw the overlay", true);
+    } finally {
+      this.busy.set(false);
+    }
+  }
 
   update(change: Partial<OverlayState>): void {
     this.store.updateOverlay(change);

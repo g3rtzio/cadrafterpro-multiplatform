@@ -1,8 +1,8 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 import { TakeoffKind, kindIcon, kindTitle } from '../../models/takeoff';
-import { TakeoffTemplate } from '../../models/templates';
+import { PART_DRAG_TYPE, TakeoffTemplate } from '../../models/templates';
 import { DrawingStore } from '../../services/drawing.store/drawing.store';
-import { TemplateLibrary } from '../../services/template-library/template-library';
+import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { Icon } from '../icon/icon';
 
 // One line of the panel: a folder or a template, indented by its depth
@@ -18,6 +18,8 @@ interface Row {
 // Templates panel of the right side bar (like PlanSwift's "Templates, Inputs"):
 // the template library, ready to use in the open document. Click a template to measure with it
 // (its properties and parts are copied into the estimate); the Templates tab is where they are edited.
+// Part templates (and every part of the Cost Database, [database]="true") are clicked to add them under
+// the selected item, or dragged onto an element or part of the estimate.
 @Component({
   selector: 'app-templates-panel',
   imports: [Icon],
@@ -28,7 +30,7 @@ interface Row {
     <section class="panel-section">
       <div class="search-box">
         <app-icon class="icon small secondary" name="search" />
-        <input type="text" placeholder="Find template" [value]="filter()" (input)="filter.set(value($event))" />
+        <input type="text" [placeholder]="database() ? 'Find part' : 'Find template'" [value]="filter()" (input)="filter.set(value($event))" />
         @if (filter()) {
           <button class="icon-button" title="Clear" (click)="filter.set('')"><app-icon class="icon small" name="close" /></button>
         }
@@ -38,10 +40,11 @@ interface Row {
       <div class="template-list">
         @for (row of rows(); track row.key) {
           @if (row.template; as t) {
-            <button class="template-row" [style.padding-left.px]="8 + row.depth * 14" [disabled]="!s.hasDocument"
+            <button class="template-row" [style.padding-left.px]="8 + row.depth * 14" [disabled]="!s.hasDocument && !t.isPart"
+                    [attr.draggable]="t.isPart ? 'true' : null" (dragstart)="dragPart(t, $event)"
                     [title]="t.isPart ? 'Add part ' + t.name + ' to the selected item' : 'Measure with ' + t.name + ' (' + title(t.kind) + ')'"
                     (click)="lib.useTemplate(t.id)">
-              <app-icon class="icon small" [style.color]="t.color" [name]="t.isPart ? 'widgets' : icon(t.kind)" />
+              <app-icon class="icon small" [style.color]="t.color" [name]="t.isPart ? (database() ? 'database' : 'widgets') : icon(t.kind)" />
               <span class="template-name">
                 {{ t.name }}
                 @if (row.path) { <span class="secondary small"> · {{ row.path }}</span> }
@@ -57,14 +60,29 @@ interface Row {
             </button>
           }
         } @empty {
-          <div class="secondary small">{{ filter() ? 'No templates match.' : 'No templates yet. Make them in the Templates tab.' }}</div>
+          <div class="secondary small">
+            @if (database()) { {{ filter() ? 'No parts match.' : 'No parts yet. Make them in the Cost Database tab.' }} }
+            @else { {{ filter() ? 'No templates match.' : 'No templates yet. Make them in the Templates tab.' }} }
+          </div>
         }
       </div>
       <div class="row-buttons">
-        <button (click)="s.showTab('Templates')"><app-icon class="icon small" name="edit" /> Edit Templates…</button>
+        @if (database()) {
+          <button (click)="s.showTab('Cost Database')"><app-icon class="icon small" name="edit" /> Edit Cost Database…</button>
+          <button [disabled]="!s.hasDocument" title="Copy these prices to every part of the document with the same name"
+                  (click)="lib.updateDocumentPrices()"><app-icon class="icon small" name="price_change" /> Update Prices</button>
+        } @else {
+          <button (click)="s.showTab('Templates')"><app-icon class="icon small" name="edit" /> Edit Templates…</button>
+        }
       </div>
-      <p class="secondary small">Click a template to measure with it on the plan. Its properties and parts go into the estimate.
-        Part templates (<app-icon class="icon small" name="widgets" />) are added as parts of the item selected on the plan or in the estimate.</p>
+      @if (database()) {
+        <p class="secondary small">Drag a part onto an element or part of the estimate to add it there, or click it to add it
+          to the item selected on the plan or in the estimate.</p>
+      } @else {
+        <p class="secondary small">Click a template to measure with it on the plan. Its properties and parts go into the estimate.
+          Part templates (<app-icon class="icon small" name="widgets" />) are added as parts of the item selected on the plan or in
+          the estimate, or dragged onto an element of the estimate.</p>
+      }
     </section>
   `,
   styles: [`
@@ -85,7 +103,10 @@ interface Row {
 })
 export class TemplatesPanel {
   readonly store = inject(DrawingStore);
-  readonly lib = inject(TemplateLibrary);
+  readonly database = input(false);                 // true = the Cost Database (parts only)
+  private readonly templates = inject(TemplateLibrary);
+  private readonly costDatabase = inject(CostDatabase);
+  get lib(): TemplateLibrary { return this.database() ? this.costDatabase : this.templates; }
   readonly filter = signal('');
   // Folders closed in this panel (separate from the Templates tab)
   private readonly closed = signal<ReadonlySet<string>>(new Set());
@@ -135,6 +156,13 @@ export class TemplatesPanel {
       f = this.lib.folder(f.parentId);
     }
     return names.join(' › ');
+  }
+
+  // A part dragged onto the estimate (see estimate-view): which library and which part
+  dragPart(t: TakeoffTemplate, event: DragEvent): void {
+    if (!t.isPart || !event.dataTransfer) return;
+    event.dataTransfer.setData(PART_DRAG_TYPE, JSON.stringify({ database: this.database(), id: t.id }));
+    event.dataTransfer.effectAllowed = 'copy';
   }
 
   icon(kind: TakeoffKind): string { return kindIcon(kind); }

@@ -8,12 +8,13 @@ import {
   isArchitecturalScale, kindTitle, kindUnit, polygonArea, polylineLength, quantityText, rectContains,
   scaleName, uid,
 } from '../../models/takeoff';
+import { FilterGroup, isFilterEmpty, matchesFilter, parseFilter } from '../../models/estimate-filter';
 import { readPage, readPdf, writePdf } from '../pdf-file/pdf-file';
 import { PageGeometry, SnapIndex, openRenderer } from '../pdf-render/pdf-render';
 import { Cell, xlsxBlob } from '../xlsx/xlsx';
 import {
   ColumnDef, ElementKind, EstimateData, EstimateGroup, EvalNode, EvalResult, Part, PropertyDef, TAKEOFF_PROPS,
-  TakeoffValues, defaultColumns, elementTemplate, emptyEstimate, evaluate, findProp, formatResult, partTemplate,
+  TakeoffValues, defaultColumns, elementTemplate, emptyEstimate, evaluate, findProp, formatResult, partTemplate, upgradeProps,
 } from '../../models/estimate';
 
 // Port of DrawingViewModel.swift: the whole state of the app.
@@ -21,7 +22,7 @@ import {
 // so they redraw (the same idea as the `_ = revision` reads on the Mac).
 
 export type SplitMode = 'single' | 'vertical' | 'horizontal';
-export type RibbonTab = 'Home' | 'Estimating' | 'Templates';
+export type RibbonTab = 'Home' | 'Estimating' | 'Templates' | 'Cost Database';
 export type InteractionMode = 'pan' | 'select' | 'zoom';
 export type Tool = 'none' | 'count' | 'length' | 'area';
 
@@ -831,7 +832,14 @@ export class DrawingStore {
   deleteSelected(): void {
     if (this.selection.length === 0) return;
     this.checkpoint();
-    const gone = new Set<PlanElement>(this.selection);
+    this.removeElements(new Set<PlanElement>(this.selection));
+    this.touch();
+  }
+
+  // Takes elements off the plan. An element of the estimate that is left with nothing on the plan
+  // goes away with its parts and properties (deleting in the estimate and on the plan is the same).
+  private removeElements(gone: Set<PlanElement>): void {
+    const before = new Set(this.elementNames());
     // If the measurement in progress is deleted, let it go
     if (this.current && gone.has(this.current)) this.current = null;
     this.countSession = this.countSession.filter(m => !gone.has(m));
@@ -842,8 +850,33 @@ export class DrawingStore {
     this.markups = this.markups.filter(m => !gone.has(m));
     this.measurements = this.measurements.filter(m => !gone.has(m));
     if (this.continuingTemplate && gone.has(this.continuingTemplate)) this.continuingTemplate = null;
-    this.selection = [];
-    this.touch();
+    this.selection = this.selection.filter(el => !gone.has(el));
+    const after = new Set(this.elementNames());
+    const lost = [...before].filter(name => !after.has(name));
+    if (lost.length) {
+      // The estimate rows of those elements (the takeoff items stay, to measure with them again)
+      const lostSet = new Set(lost);
+      const keys = new Set<string>(lost);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const p of this.estimate.parts) {
+          if (p.parentKey && keys.has(p.parentKey) && !keys.has(p.id)) { keys.add(p.id); grew = true; }
+        }
+      }
+      this.estimate.parts = this.estimate.parts.filter(p => !keys.has(p.id));
+      for (const name of lost) delete this.estimate.elementProps[name];
+      for (const g of this.estimateGroups) g.rowNames = g.rowNames.filter(n => !lostSet.has(n));
+      if (this.selectedEstimateKey && keys.has(this.selectedEstimateKey)) this.selectedEstimateKey = null;
+      this.extraEstimateKeys = new Set([...this.extraEstimateKeys].filter(k => !keys.has(k)));
+      this.estimateChanged();
+    }
+  }
+
+  // Everything on the plan that makes the element `name` of the estimate
+  private elementsNamed(name: string): PlanElement[] {
+    const ids = new Set(this.items.filter(i => i.name === name).map(i => i.id));
+    return [...this.measurements.filter(m => ids.has(m.itemId)), ...this.markups.filter(m => m.isPlanElement && m.name === name)];
   }
 
   // Takeoff item an app measurement belongs to
@@ -1234,7 +1267,7 @@ export class DrawingStore {
     this.measurements.forEach(m => this.updateCaption(m));
     // New snapshots: where the picture goes, so it stays upright on rotated pages
     for (const m of this.markups) {
-      if (m.ref || !m.imageJpeg || !this.pages[m.pageIndex]) continue;
+      if (m.ref || !(m.imageJpeg || m.imagePixels) || !this.pages[m.pageIndex]) continue;
       m.imageMatrix = this.imageMatrix(m.rect, this.pages[m.pageIndex]);
     }
     const bytes = await writePdf(lib, {
@@ -1736,6 +1769,30 @@ export class DrawingStore {
     this.touch();
   }
 
+  // Confirm: the page on top stays on the base page as a picture (an "Overlay" item of the document,
+  // saved in the PDF as an image markup with transparency). rect = the whole base page.
+  confirmOverlay(picture: { url: string; pixels: { width: number; height: number; rgba: Uint8ClampedArray } }): void {
+    const o = this.overlay();
+    const g = o ? this.pages[o.baseIndex] : null;
+    if (!o || !g) return;
+    this.checkpoint();
+    const m = new Markup(o.baseIndex);
+    m.subtype = 'Stamp';
+    m.subject = 'Overlay';
+    m.contents = `${this.pageName(o.sourceIndex)} over ${this.pageName(o.baseIndex)}`;
+    m.rect = g.rectToPage({ x: 0, y: 0, w: g.width, h: g.height });
+    m.lineWidth = 0;
+    m.imageUrl = picture.url;
+    m.imagePixels = picture.pixels;
+    m.dirty = true;
+    this.markups.push(m);
+    this.overlay.set(null);
+    this.selection = [m];
+    this.goTo(o.baseIndex);
+    this.showToast('Overlay added to the page. Save to keep it in the PDF; Undo removes it');
+    this.touch();
+  }
+
   // MARK: - Estimate ("Estimating" tab, PlanSwift style)
   // Rows: every element (app takeoff item or PDF markup group, matched by name) and the Parts.
   // Parts hang under their element (sub-items). Nothing is grouped by default: the user makes
@@ -1828,7 +1885,7 @@ export class DrawingStore {
       // Saved before markups had their own type: "Count" becomes "Highlight", "Cloud"…
       const type = saved.find(p => p.name === 'Type');
       if (type && markupType && type.formula === 'Count') type.formula = markupType;
-      return saved;
+      return upgradeProps(saved, this.elementInfo(key)?.kind ?? 'count');
     }
     return elementTemplate(this.elementInfo(key)?.kind ?? 'count', key, markupType);
   }
@@ -1844,12 +1901,15 @@ export class DrawingStore {
   // What the formulas of a row are calculated from. `props` replaces the row's list
   // (the Properties window shows results while editing).
   evalNode(key: string, props?: PropertyDef[], depth = 0): EvalNode {
+    // Parts right below, for [Parts:…] (each one reaches this row again through [..])
+    const children = () => depth > 20 ? [] : this.estimate.parts.filter(p => p.parentKey === key)
+      .map(p => this.evalNode(p.id, undefined, depth + 1));
     const part = this.estimate.parts.find(p => p.id === key);
     if (part) {
       const parent = part.parentKey && depth < 20 ? this.evalNode(part.parentKey, undefined, depth + 1) : null;
-      return { props: props ?? part.props, takeoff: null, parent };
+      return { props: props ?? part.props, takeoff: null, parent, children };
     }
-    return { props: props ?? this.rowProps(key), takeoff: this.elementInfo(key)?.takeoff ?? null, parent: null };
+    return { props: props ?? this.rowProps(key), takeoff: this.elementInfo(key)?.takeoff ?? null, parent: null, children };
   }
 
   // Value of one property of a row ("1,250.00", units "SF")
@@ -1932,7 +1992,26 @@ export class DrawingStore {
 
   selectEstimateRow(key: string | null): void {
     this.selectedEstimateKey = key;
+    this.extraEstimateKeys = new Set();
     this.touch();
+  }
+
+  // Several rows (Shift + click = a range, Ctrl / ⌘ + click = one more): `primary` is the one
+  // Properties and New Part use
+  extraEstimateKeys = new Set<string>();
+
+  selectEstimateRows(keys: string[], primary: string | null): void {
+    this.selectedEstimateKey = primary ?? keys[0] ?? null;
+    this.extraEstimateKeys = new Set(keys.filter(k => k !== this.selectedEstimateKey));
+    this.touch();
+  }
+
+  get estimateSelection(): string[] {
+    return this.selectedEstimateKey ? [this.selectedEstimateKey, ...this.extraEstimateKeys] : [];
+  }
+
+  isEstimateSelected(key: string): boolean {
+    return !!this.selectedEstimateKey && (this.selectedEstimateKey === key || this.extraEstimateKeys.has(key));
   }
 
   // MARK: - Properties window
@@ -2009,32 +2088,96 @@ export class DrawingStore {
     this.estimateChanged();
   }
 
+  // A part of the estimate dragged onto another element or part becomes its child (with its sub-parts)
+  movePart(partId: string, parentKey: string): void {
+    const part = this.estimate.parts.find(p => p.id === partId);
+    if (!part || part.parentKey === parentKey || partId === parentKey || !this.rowExists(parentKey)) return;
+    // Not under itself or one of its own sub-parts
+    let key: string | null = parentKey;
+    for (let guard = 0; key && guard < 50; guard++) {
+      if (key === partId) return;
+      const above: string = key;
+      key = this.estimate.parts.find(x => x.id === above)?.parentKey ?? null;
+    }
+    this.checkpoint();
+    part.parentKey = parentKey;
+    this.estimateCollapsed.delete(`${this.isPart(parentKey) ? 'part' : 'element'}-${parentKey}`);
+    this.estimateChanged();
+  }
+
   get canAddSubItem(): boolean {
     return !!this.selectedEstimateKey && this.rowExists(this.selectedEstimateKey);
   }
 
   // Delete in the estimate: a part (with its sub-items) or a group (its rows stay)
+  // Every selected part (with its sub-items) and group (its rows stay), as one Undo step
   deleteEstimateSelection(): void {
-    const key = this.selectedEstimateKey;
-    if (!key) return;
-    if (this.estimateGroups.some(g => g.id === key)) {
-      this.deleteEstimateGroup(key);
-    } else if (this.isPart(key)) {
-      this.checkpoint();
-      const gone = new Set<string>([key]);
-      let grew = true;
-      while (grew) {
-        grew = false;
-        for (const p of this.estimate.parts) {
-          if (p.parentKey && gone.has(p.parentKey) && !gone.has(p.id)) { gone.add(p.id); grew = true; }
-        }
-      }
-      this.estimate.parts = this.estimate.parts.filter(p => !gone.has(p.id));
-      this.selectedEstimateKey = null;
-      this.estimateChanged();
-    } else {
-      this.showToast('Measured elements are deleted on the plan', true);
+    const keys = this.estimateSelection;
+    if (keys.length === 0) return;
+    const groups = keys.filter(k => this.estimateGroups.some(g => g.id === k));
+    const parts = keys.filter(k => this.isPart(k));
+    // Elements: deleted on the plan too (their measurements and PDF markups)
+    const elements = keys.filter(k => !groups.includes(k) && !parts.includes(k));
+    const onPlan = new Set(elements.flatMap(name => this.elementsNamed(name)));
+    if (groups.length === 0 && parts.length === 0 && onPlan.size === 0) return;
+    this.checkpoint();
+    if (onPlan.size) {
+      this.removeElements(onPlan);
+      this.showToast(`Deleted ${elements.length} element${elements.length === 1 ? '' : 's'} and ${onPlan.size} markup${onPlan.size === 1 ? '' : 's'} on the plan (Undo restores them)`);
     }
+    const gone = new Set<string>(parts);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const p of this.estimate.parts) {
+        if (p.parentKey && gone.has(p.parentKey) && !gone.has(p.id)) { gone.add(p.id); grew = true; }
+      }
+    }
+    this.estimate.parts = this.estimate.parts.filter(p => !gone.has(p.id));
+    this.estimateGroups = this.estimateGroups.filter(g => !groups.includes(g.id));
+    this.selectedEstimateKey = null;
+    this.extraEstimateKeys = new Set();
+    this.estimateChanged();
+  }
+
+  // MARK: - Filter builder (Estimating › Filter): only the rows that pass it are shown
+  estimateFilter: FilterGroup | null = parseFilter(readSetting('estimateFilter') ?? '');
+  filterOpen = false;
+
+  get filterActive(): boolean { return !isFilterEmpty(this.estimateFilter); }
+
+  openFilter(): void {
+    this.filterOpen = true;
+    this.touch();
+  }
+
+  closeFilter(): void {
+    this.filterOpen = false;
+    this.touch();
+  }
+
+  setEstimateFilter(filter: FilterGroup | null): void {
+    this.estimateFilter = filter && !isFilterEmpty(filter) ? structuredClone(filter) : null;
+    writeSetting('estimateFilter', this.estimateFilter ? JSON.stringify(this.estimateFilter) : '');
+    this.touch();
+  }
+
+  // One field of a row, for the filters: a property, or IsTakeoffItem / IsPart / Name / Type / Pages / Color
+  filterValue(row: EstimateRow, field: string): unknown {
+    switch (field) {
+      case 'IsTakeoffItem': return row.kind === 'element' ? 'True' : 'False';      // measured or PDF markup element
+      case 'IsPart': return row.kind === 'part' ? 'True' : 'False';
+      case 'Name': return row.name;
+      case 'Pages': return row.pages;
+      case 'Color': return row.color ?? '';
+    }
+    if (row.isFolder) return '';
+    return this.rowValue(row.key, field).value;
+  }
+
+  rowPassesFilter(row: EstimateRow): boolean {
+    const f = this.estimateFilter;
+    return !f || isFilterEmpty(f) || matchesFilter(f, field => this.filterValue(row, field));
   }
 
   // MARK: - Columns window
@@ -2105,6 +2248,17 @@ export class DrawingStore {
     this.estimateChanged();
   }
 
+  // Several rows (by name) into a group, or out of every group, as one Undo step
+  moveManyToEstimateGroup(rowNames: string[], groupId: string | null): void {
+    const target = groupId ? this.estimateGroups.find(g => g.id === groupId) : null;
+    const names = rowNames.filter(n => target ? !target.rowNames.includes(n) : this.estimateGroups.some(g => g.rowNames.includes(n)));
+    if (names.length === 0) return;
+    this.checkpoint();
+    for (const g of this.estimateGroups) g.rowNames = g.rowNames.filter(n => !names.includes(n));
+    target?.rowNames.push(...names);
+    this.estimateChanged();
+  }
+
   // Moves a row (by name) into a group, or out of every group (groupId = null)
   moveToEstimateGroup(rowName: string, groupId: string | null): void {
     const target = groupId ? this.estimateGroups.find(g => g.id === groupId) : null;
@@ -2132,7 +2286,7 @@ export class DrawingStore {
           version: 1,
           groups: Array.isArray(data.groups) ? data.groups : [],
           elementProps: data.elementProps && typeof data.elementProps === 'object' ? data.elementProps : {},
-          parts: Array.isArray(data.parts) ? data.parts : [],
+          parts: Array.isArray(data.parts) ? data.parts.map(p => ({ ...p, props: upgradeProps(p.props ?? [], null) })) : [],
           columns: Array.isArray(data.columns) && data.columns.length ? data.columns : defaultColumns(),
         };
       } catch {

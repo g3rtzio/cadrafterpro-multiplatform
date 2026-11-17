@@ -1,9 +1,9 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { Part, PropertyDef, evaluate, findProp, partTemplate } from '../../models/estimate';
+import { Part, PropertyDef, evaluate, findProp, partTemplate, upgradeProps } from '../../models/estimate';
 import { TakeoffKind, kindTitle } from '../../models/takeoff';
 import {
-  PART_COLOR, TakeoffTemplate, TemplateFolder, TemplateLibraryData, TemplatePart, newId, setFormula, starterLibrary,
-  templateProps,
+  PART_COLOR, TakeoffTemplate, TemplateFolder, TemplateLibraryData, TemplatePart, newId, setFormula, starterCostDatabase,
+  starterLibrary, templateProps,
 } from '../../models/templates';
 import { Measurement } from '../../models/elements';
 import { DrawingStore } from '../drawing.store/drawing.store';
@@ -25,7 +25,7 @@ export class TemplateLibrary {
   // Views read this so they redraw after every change
   readonly watch = computed(() => { this.rev(); return this; }, { equal: () => false });
 
-  data: TemplateLibraryData = load();
+  data: TemplateLibraryData = this.load();
   selection: TemplateSelection = null;
   collapsed = new Set<string>();                  // folders and templates closed in the tree
   renaming: string | null = null;                 // folder being renamed in the tree
@@ -33,8 +33,28 @@ export class TemplateLibrary {
   private touch(): void { this.rev.update(v => v + 1); }
 
   private changed(): void {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data)); } catch { /* not remembered */ }
+    try { localStorage.setItem(this.storageKey(), JSON.stringify(this.data)); } catch { /* not remembered */ }
     this.touch();
+  }
+
+  // What this library is: the Templates tab (elements and parts) or the Cost Database (parts only).
+  // Methods, not fields, so the Cost Database can change them before its data is loaded.
+  protected storageKey(): string { return STORAGE_KEY; }
+  protected starter(): TemplateLibraryData { return starterLibrary(); }
+  get partsOnly(): boolean { return false; }
+  get title(): string { return 'Templates'; }
+
+  private load(): TemplateLibraryData {
+    try {
+      const text = localStorage.getItem(this.storageKey());
+      if (text) {
+        const data = JSON.parse(text) as Partial<TemplateLibraryData>;
+        if (Array.isArray(data.folders) && Array.isArray(data.templates)) {
+          return { version: 1, folders: data.folders, templates: data.templates.map(upgradeTemplate) };
+        }
+      }
+    } catch { /* fall back to the starter library */ }
+    return this.starter();
   }
 
   // MARK: - Lookups
@@ -229,6 +249,24 @@ export class TemplateLibrary {
     this.changed();
   }
 
+  // A part template (or Cost Database part) dropped on a template of this library: a copy of it,
+  // with its sub-parts, becomes a part of that template (under `parentId`, a part of it, or at the top)
+  addPartToTemplate(source: TakeoffTemplate, templateId: string, parentId: string | null): void {
+    const t = this.template(templateId);
+    if (!t || !source.isPart) return;
+    const top: TemplatePart = { id: newId('tpart'), parentId, props: structuredClone(source.props) };
+    setFormula(top.props, 'Name', source.name);
+    const ids = new Map(source.parts.map(p => [p.id, newId('tpart')]));
+    t.parts.push(top, ...source.parts.map(p => ({
+      id: ids.get(p.id)!, parentId: p.parentId ? ids.get(p.parentId) ?? top.id : top.id, props: structuredClone(p.props),
+    })));
+    this.collapsed.delete(t.id);
+    if (parentId) this.collapsed.delete(parentId);
+    this.selection = { type: 'part', templateId: t.id, id: top.id };
+    this.changed();
+    this.store.showToast(`Added "${source.name}" to "${t.name}"`);
+  }
+
   // MARK: - Delete (a folder takes everything inside it)
   deleteSelection(): void {
     const s = this.selection;
@@ -345,6 +383,35 @@ export class TemplateLibrary {
     s.showToast(`Added "${t.name}" to "${parentName}"`);
   }
 
+  // Copies the prices (the Estimating properties except Qty) of every part of this library to the
+  // parts of the open document with the same name (one Undo step)
+  updateDocumentPrices(): void {
+    const s = this.store;
+    if (!s.hasDocument) {
+      s.showToast('Open a drawing first', true);
+      return;
+    }
+    const byName = new Map<string, TakeoffTemplate>();
+    for (const t of this.data.templates) if (t.isPart) byName.set(t.name.trim().toLowerCase(), t);
+    const matches = s.estimate.parts.filter(p => byName.has(s.partName(p).trim().toLowerCase()));
+    if (matches.length === 0) {
+      s.showToast(`No part of the document has the name of a part in the ${this.title}`, true);
+      return;
+    }
+    s.checkpoint();
+    for (const part of matches) {
+      const source = byName.get(s.partName(part).trim().toLowerCase())!;
+      for (const def of source.props) {
+        if (def.group !== 'Estimating' || def.name === 'Qty') continue;
+        const target = findProp(part.props, def.name);
+        if (target) Object.assign(target, { formula: def.formula, inputUnits: def.inputUnits, units: def.units, decimals: def.decimals });
+        else part.props.push(structuredClone(def));
+      }
+    }
+    s.estimateChanged();
+    s.showToast(`Updated the prices of ${matches.length} part${matches.length === 1 ? '' : 's'}`);
+  }
+
   // MARK: - Save an element of the document as a template (with its properties and parts)
   documentElements(): { name: string; color: string }[] {
     return this.store.estimateRows().filter(r => r.kind === 'element').map(r => ({ name: r.name, color: r.color ?? '' }));
@@ -382,7 +449,7 @@ export class TemplateLibrary {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'CadrafterPro Templates.json';
+    a.download = `CadrafterPro ${this.title}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -403,13 +470,15 @@ export class TemplateLibrary {
         this.data.folders.push(root, ...(data.folders ?? []).map(f => ({
           id: folderIds.get(f.id)!, name: f.name, parentId: f.parentId ? folderIds.get(f.parentId) ?? root.id : root.id,
         })));
-        this.data.templates.push(...data.templates.map(t => ({
-          ...t, id: newId('tpl'), folderId: t.folderId ? folderIds.get(t.folderId) ?? root.id : root.id,
-          parts: Array.isArray(t.parts) ? t.parts : [], props: Array.isArray(t.props) ? t.props : templateProps(t.kind, t.name),
-        })));
+        this.data.templates.push(...data.templates
+          .filter(t => !this.partsOnly || t.isPart)
+          .map(t => upgradeTemplate({
+            ...t, id: newId('tpl'), folderId: t.folderId ? folderIds.get(t.folderId) ?? root.id : root.id,
+            parts: Array.isArray(t.parts) ? t.parts : [], props: Array.isArray(t.props) ? t.props : templateProps(t.kind, t.name),
+          })));
         this.selection = { type: 'folder', id: root.id };
         this.changed();
-        this.store.showToast(`Imported ${data.templates.length} templates`);
+        this.store.showToast(`Imported ${data.templates.length} ${this.partsOnly ? 'parts' : 'templates'}`);
       } catch {
         this.store.showToast('That file is not a template library', true);
       }
@@ -447,15 +516,21 @@ function descendantsByKey(parts: Part[], key: string): Set<Part> {
   return found;
 }
 
-function load(): TemplateLibraryData {
-  try {
-    const text = localStorage.getItem(STORAGE_KEY);
-    if (text) {
-      const data = JSON.parse(text) as Partial<TemplateLibraryData>;
-      if (Array.isArray(data.folders) && Array.isArray(data.templates)) {
-        return { version: 1, folders: data.folders, templates: data.templates };
-      }
-    }
-  } catch { /* fall back to the starter library */ }
-  return starterLibrary();
+// Lists saved before Volume and the part totals existed
+function upgradeTemplate(t: TakeoffTemplate): TakeoffTemplate {
+  const kind = t.kind === 'area' ? 'area' : t.kind === 'count' ? 'count' : 'length';
+  upgradeProps(t.props, t.isPart ? null : kind);
+  for (const p of t.parts ?? []) upgradeProps(p.props, null);
+  return t;
+}
+
+// Cost Database tab: a library of priced parts (no elements), in its own storage.
+// Its parts are added to the estimate like part templates, and "Update Prices" copies their
+// prices to every part of the open document with the same name.
+@Injectable({ providedIn: 'root' })
+export class CostDatabase extends TemplateLibrary {
+  protected override storageKey(): string { return 'costDatabase'; }
+  protected override starter(): TemplateLibraryData { return starterCostDatabase(); }
+  override get partsOnly(): boolean { return true; }
+  override get title(): string { return 'Cost Database'; }
 }

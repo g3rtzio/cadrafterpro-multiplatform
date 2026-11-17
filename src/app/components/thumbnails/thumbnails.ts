@@ -132,12 +132,15 @@ export class PageThumb implements OnDestroy {
 
     <div class="page-list" (dragover)="onListDragOver($event)" (drop)="onDrop($event)" (dragleave)="onDragLeave($event)">
       @for (page of s.pages; track page; let i = $index) {
+        @if (pageShown(i)) {
         <div class="slot" [class.drop-before]="dropAt() === i" [class.drop-after]="dropAt() === s.pageCount && i === s.pageCount - 1"
              draggable="true" (dragstart)="onDragStart($event, i)" (dragend)="onDragEnd()"
              (dragover)="onDragOver($event, i)" (click)="onClick($event, i)" (contextmenu)="openMenu($event, i)">
           <app-page-thumb [index]="i" [selected]="isSelected(i)" />
         </div>
+        }
       }
+      @if (filter().trim() && shownCount() === 0) { <div class="secondary small">No page matches.</div> }
       <div class="list-end"></div>
     </div>
 
@@ -170,6 +173,8 @@ export class PageThumb implements OnDestroy {
 })
 export class Thumbnails {
   readonly store = inject(DrawingStore);
+  // Search box above the list: only pages whose name contains this
+  readonly filter = input('');
   readonly labeler = inject(PageLabeler);
   // Pages selected besides the current one (indexes); cleared whenever the pages change
   private readonly extra = signal<Set<number>>(new Set());
@@ -185,6 +190,15 @@ export class Thumbnails {
     if (s.pages !== this.pageList) return [s.currentPageIndex];
     return [...new Set([s.currentPageIndex, ...this.extra()])].filter(i => i < s.pageCount).sort((a, b) => a - b);
   });
+
+  pageShown(index: number): boolean {
+    const q = this.filter().trim().toLowerCase();
+    return !q || this.store.pageName(index).toLowerCase().includes(q);
+  }
+
+  shownCount(): number {
+    return this.store.pages.filter((_, i) => this.pageShown(i)).length;
+  }
 
   constructor() {
     // New page list (added, deleted, moved, another file): the selection starts over

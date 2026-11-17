@@ -88,6 +88,23 @@ export function starterLibrary(): TemplateLibraryData {
   };
 }
 
+// First Cost Database: a few priced parts in folders (only parts live there)
+export function starterCostDatabase(): TemplateLibraryData {
+  const materials: TemplateFolder = { id: newId('folder'), name: 'Materials', parentId: null };
+  const labor: TemplateFolder = { id: newId('folder'), name: 'Labor', parentId: null };
+  return {
+    version: 1,
+    folders: [materials, labor],
+    templates: [
+      partItem(materials.id, 'Concrete', 0),
+      partItem(materials.id, 'Wire Mesh', 0),
+      partItem(materials.id, 'Box', 0),
+      partItem(materials.id, 'Cover Plate', 0),
+      partItem(labor.id, 'Labor Hour', 0),
+    ],
+  };
+}
+
 // A part template of the starter library
 function partItem(folderId: string, name: string, cost: number): TakeoffTemplate {
   const props = partTemplate(name);
@@ -96,6 +113,11 @@ function partItem(folderId: string, name: string, cost: number): TakeoffTemplate
 }
 
 export const PART_COLOR = '#FF9500';
+
+// Drag data of a part template or Cost Database part dropped on the estimate: { database, id }
+export const PART_DRAG_TYPE = 'application/x-cadrafter-part';
+// Drag data of a part of the estimate moved under another row: its id
+export const ESTIMATE_PART_DRAG_TYPE = 'application/x-cadrafter-estimate-part';
 
 // Built-in layouts: the default columns, a takeoff-only view and a cost view
 export function starterLayouts(): EstimateLayout[] {

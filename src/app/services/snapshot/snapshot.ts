@@ -1,5 +1,5 @@
 import { Rect } from '../../models/takeoff';
-import { DrawingStore, SnapshotClip } from '../drawing.store/drawing.store';
+import { DrawingStore, OverlayState, SnapshotClip } from '../drawing.store/drawing.store';
 import { PageGeometry, renderRegion } from '../pdf-render/pdf-render';
 import { Shape, pageShapes } from '../shapes/shapes';
 
@@ -33,6 +33,48 @@ export async function captureSnapshot(store: DrawingStore, pageIndex: number, g:
   // Also on the system clipboard, so it can be pasted in other apps (best effort)
   void copyToSystemClipboard(canvas);
   return { url, jpeg, w: region.w, h: region.h };
+}
+
+// Overlay "Confirm": the page on top as the base page shows it (moved, scaled, rotated, in its color
+// and opacity), drawn over a transparent picture the size of the base page.
+// White becomes transparent and dark lines take the color, like on screen.
+export async function captureOverlay(o: OverlayState, base: PageGeometry, top: PageGeometry):
+    Promise<{ url: string; pixels: { width: number; height: number; rgba: Uint8ClampedArray } } | null> {
+  const OVERLAY_DPI = 150, OVERLAY_MAX_PIXELS = 12_000_000;
+  let k = OVERLAY_DPI / 72;
+  if (base.width * base.height * k * k > OVERLAY_MAX_PIXELS) k = Math.sqrt(OVERLAY_MAX_PIXELS / (base.width * base.height));
+  // The page on top, sharp enough for its scale on the base page
+  const sourceScale = Math.min(k * Math.max(o.scale, 0.1), 6);
+  const source = await renderRegion(top.page, { x: 0, y: 0, w: top.width, h: top.height }, sourceScale);
+  if (!source) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(base.width * k));
+  canvas.height = Math.max(1, Math.round(base.height * k));
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  // Same transform as the plan: translate(dx, dy) rotate scale around the center of the page on top
+  ctx.scale(k, k);
+  ctx.translate(o.dx + top.width / 2, o.dy + top.height / 2);
+  ctx.rotate(o.rotation * Math.PI / 180);
+  ctx.scale(o.scale, o.scale);
+  ctx.translate(-top.width / 2, -top.height / 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, top.width, top.height);
+  ctx.drawImage(source, 0, 0, top.width, top.height);
+  // Tint: every pixel takes the color, alpha = how dark it was × opacity
+  const h = o.overlayColor.replace('#', '');
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) || 0);
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = image.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const covered = d[i + 3] / 255;
+    const luminance = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255;
+    d[i] = r; d[i + 1] = g; d[i + 2] = b;
+    d[i + 3] = Math.round(255 * covered * (1 - luminance) * o.opacity);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.putImageData(image, 0, 0);
+  return { url: canvas.toDataURL('image/png'), pixels: { width: canvas.width, height: canvas.height, rgba: d } };
 }
 
 // The SVG layer of the plan as a standalone SVG document, cropped to `region`

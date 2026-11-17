@@ -121,6 +121,8 @@ export class Markup {
   imageUrl: string | null = null;          // what the plan shows (data URL)
   imageJpeg: Uint8Array | null = null;     // new snapshot: the JPEG written into the PDF on save
   imageMatrix: number[] | null = null;     // picture's unit square → page coordinates (set when saving)
+  // Confirmed overlay: a picture with transparency (RGBA), written as an image with a soft mask
+  imagePixels: { width: number; height: number; rgba: Uint8ClampedArray } | null = null;
 
   // MARK: - Markups drawn with the Markup tools (text box, callout, cloud, shapes, pen)
   appMade = false;                         // made by CadrafterPro: the whole dictionary and /AP are rewritten on save
@@ -150,7 +152,7 @@ export class Markup {
   // which are areas, lengths or counts
   get markupType(): string | null {
     if (this.isRevuMeasurement) return null;
-    const known = ['Cloud+', 'Cloud', 'Callout', 'Text Box', 'Snapshot', 'Arrow', 'Highlight', 'Pen', 'Rectangle',
+    const known = ['Cloud+', 'Cloud', 'Callout', 'Text Box', 'Overlay', 'Snapshot', 'Arrow', 'Highlight', 'Pen', 'Rectangle',
       'Ellipse', 'Line', 'Polyline', 'Polygon', 'Underline', 'Squiggly', 'Strikethrough', 'Redaction', 'Hyperlink'];
     const subject = known.find(k => k.toLowerCase() === this.subject.trim().toLowerCase());
     if (subject) return subject;
@@ -164,7 +166,9 @@ export class Markup {
       case 'Square': return 'Rectangle';
       case 'Circle': return 'Ellipse';
       case 'Ink': return this.isHighlight ? 'Highlight' : 'Pen';
-      case 'Stamp': return this.imageUrl || /snapshot/i.test(this.subject) ? 'Snapshot' : 'Stamp';
+      case 'Stamp':
+        if (/overlay/i.test(this.subject)) return 'Overlay';
+        return this.imageUrl || /snapshot/i.test(this.subject) ? 'Snapshot' : 'Stamp';
       case 'StrikeOut': return 'Strikethrough';
       case 'Redact': return 'Redaction';
       case 'Link': return 'Hyperlink';

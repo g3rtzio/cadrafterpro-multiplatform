@@ -1,10 +1,14 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
-import { Markup } from '../../models/elements';
+import { ChangeDetectionStrategy, Component, inject, input, signal } from '@angular/core';
+import { Markup, PlanElement } from '../../models/elements';
 import { TakeoffItem, kindIcon, kindUnit } from '../../models/takeoff';
 import { DrawingStore, MarkupGroup } from '../../services/drawing.store/drawing.store';
 import { Icon } from '../icon/icon';
 
 // Element tree: pages › takeoff items and groups of PDF markups — port of TakeoffTreeView.swift
+// `filter` (the search box above it): pages whose name matches show everything; other pages show
+// only the elements whose name matches, already open.
+// Click selects an element; Shift + click selects every row from the first one clicked to this one,
+// Ctrl / ⌘ + click adds or removes one, Ctrl + Shift + click adds a range to what is selected.
 @Component({
   selector: 'app-takeoff-tree',
   imports: [Icon],
@@ -16,15 +20,18 @@ import { Icon } from '../icon/icon';
       <div class="secondary pad">Open a drawing</div>
     }
     @for (page of s.pages; track $index; let index = $index) {
-      @let takeoffs = s.itemsOnPage(index);
-      @let groups = otherGroups(index, takeoffs);
+      @let allTakeoffs = s.itemsOnPage(index);
+      @let pageHit = pageMatches(index);
+      @let takeoffs = pageHit ? allTakeoffs : matchingItems(allTakeoffs);
+      @let groups = pageHit ? otherGroups(index, allTakeoffs) : matchingGroups(otherGroups(index, allTakeoffs));
       @let isCurrent = index === s.currentPageIndex;
+      @if (!searching() || pageHit || takeoffs.length || groups.length) {
       <!-- Page row: double click or right click to rename it. The page shown in the plan is highlighted -->
       <div class="tree-row page-row" [class.current]="isCurrent" (click)="s.goTo(index)"
            (dblclick)="startEdit('page-' + index, s.pageNames.get(index) ?? '')"
            (contextmenu)="$event.preventDefault(); startEdit('page-' + index, s.pageNames.get(index) ?? '')">
         <button class="disclosure" (click)="$event.stopPropagation(); toggle('page-' + index)">
-          <app-icon class="icon small" [name]="isOpen('page-' + index) ? 'expand_more' : 'chevron_right'" />
+          <app-icon class="icon small" [name]="pageOpen(index, pageHit) ? 'expand_more' : 'chevron_right'" />
         </button>
         <app-icon class="icon small" [name]="isCurrent ? 'description' : 'draft'" />
         @if (editingKey() === 'page-' + index) {
@@ -37,7 +44,7 @@ import { Icon } from '../icon/icon';
         <span class="count">{{ countOf(groups) + takeoffs.length }}</span>
       </div>
 
-      @if (isOpen('page-' + index)) {
+      @if (pageOpen(index, pageHit)) {
         <div class="tree-children">
           <!-- App measurements (green dot = keep measuring with that item on the page shown).
                PDF markups with the same name are part of the same element -->
@@ -48,7 +55,7 @@ import { Icon } from '../icon/icon';
             @let selected = measured.length > 0 && allSelected(measured);
             @let itemKey = 'item-' + index + '-' + item.id;
             <div class="tree-row" [class.active]="active" [class.selected]="!active && selected"
-                 (click)="s.goTo(index); s.selectElements(measured)"
+                 (click)="s.goTo(index); pick(itemKey, measured, $event)"
                  (dblclick)="startEdit('item-' + item.id, item.name)"
                  (contextmenu)="$event.preventDefault(); startEdit('item-' + item.id, item.name)">
               @if (saved.length) {
@@ -79,7 +86,7 @@ import { Icon } from '../icon/icon';
             @if (saved.length && isOpen(itemKey)) {
               <div class="tree-children">
                 @for (m of saved; track m.id; let i = $index) {
-                  <div class="tree-row" [class.selected]="s.isSelected(m)" (click)="s.selectElements([m]); s.showElement(m)">
+                  <div class="tree-row" [class.selected]="s.isSelected(m)" (click)="pick('m-' + m.id, [m], $event) && s.showElement(m)">
                     <app-icon class="icon small" [style.color]="m.color ?? '#8E8E93'" name="check_box_outline_blank" />
                     <span class="name" [class.dimmed]="!m.visible">{{ m.contents || m.typeName + ' ' + (i + 1) }}</span>
                     <button class="bulb" [class.on]="m.visible" (click)="$event.stopPropagation(); s.setVisible([m], !m.visible)">
@@ -99,7 +106,7 @@ import { Icon } from '../icon/icon';
             @let key = 'group-' + index + '-' + group.name;
             @let active = s.isContinuing(group.markups);
             <div class="tree-row" [class.active]="active" [class.selected]="!active && allSelected(group.markups)"
-                 (click)="s.selectElements(group.markups); showFirst(group)"
+                 (click)="pick(key, group.markups, $event) && showFirst(group)"
                  (dblclick)="startEdit(key, group.name)"
                  (contextmenu)="$event.preventDefault(); startEdit(key, group.name)">
               <button class="disclosure" (click)="$event.stopPropagation(); toggle(key)">
@@ -129,7 +136,7 @@ import { Icon } from '../icon/icon';
               <div class="tree-children">
                 <!-- A single markup: click selects only that one -->
                 @for (m of group.markups; track m.id; let i = $index) {
-                  <div class="tree-row" [class.selected]="s.isSelected(m)" (click)="s.selectElements([m]); s.showElement(m)">
+                  <div class="tree-row" [class.selected]="s.isSelected(m)" (click)="pick('m-' + m.id, [m], $event) && s.showElement(m)">
                     <app-icon class="icon small" [style.color]="m.color ?? '#8E8E93'" name="check_box_outline_blank" />
                     <span class="name" [class.dimmed]="!m.visible">{{ m.contents || m.typeName + ' ' + (i + 1) }}</span>
                     <button class="bulb" [class.on]="m.visible" (click)="$event.stopPropagation(); s.setVisible([m], !m.visible)">
@@ -142,6 +149,10 @@ import { Icon } from '../icon/icon';
           }
         </div>
       }
+      }
+    }
+    @if (s.hasDocument && searching() && noMatches()) {
+      <div class="secondary small pad">No page or element matches.</div>
     }
   `,
 })
@@ -151,7 +162,84 @@ export class TakeoffTree {
   readonly editingKey = signal<string | null>(null);
   readonly editText = signal('');
 
+  readonly filter = input('');
+
   isOpen(key: string): boolean { return this.open().has(key); }
+
+  // MARK: - Selection of several rows
+  private anchor: string | null = null;
+
+  // true = a plain click (the caller also shows the element)
+  pick(key: string, elements: PlanElement[], e: MouseEvent): boolean {
+    const s = this.store;
+    const add = e.ctrlKey || e.metaKey;
+    if (e.shiftKey && this.anchor) {
+      const rows = this.visibleRows();
+      const i = rows.findIndex(r => r.key === this.anchor), j = rows.findIndex(r => r.key === key);
+      if (i >= 0 && j >= 0) {
+        const range = rows.slice(Math.min(i, j), Math.max(i, j) + 1).flatMap(r => r.elements);
+        s.selectElements([...new Set([...(add ? s.selection : []), ...range])]);
+        return false;
+      }
+    }
+    this.anchor = key;
+    if (add) {
+      const all = elements.length > 0 && elements.every(el => s.selection.includes(el));
+      s.selectElements(all ? s.selection.filter(el => !elements.includes(el)) : [...new Set([...s.selection, ...elements])]);
+      return false;
+    }
+    s.selectElements(elements);
+    return true;
+  }
+
+  // Element rows in the order they are shown (pages open, search applied)
+  private visibleRows(): { key: string; elements: PlanElement[] }[] {
+    const s = this.store;
+    const rows: { key: string; elements: PlanElement[] }[] = [];
+    s.pages.forEach((_, index) => {
+      const all = s.itemsOnPage(index);
+      const pageHit = this.pageMatches(index);
+      const takeoffs = pageHit ? all : this.matchingItems(all);
+      const groups = pageHit ? this.otherGroups(index, all) : this.matchingGroups(this.otherGroups(index, all));
+      if (this.searching() && !pageHit && !takeoffs.length && !groups.length) return;
+      if (!this.pageOpen(index, pageHit)) return;
+      for (const item of takeoffs) {
+        const saved = s.itemMarkups(item, index);
+        const itemKey = 'item-' + index + '-' + item.id;
+        rows.push({ key: itemKey, elements: [...s.measurementsOf(item.id, index), ...saved] });
+        if (saved.length && this.isOpen(itemKey)) saved.forEach(m => rows.push({ key: 'm-' + m.id, elements: [m] }));
+      }
+      for (const group of groups) {
+        const key = 'group-' + index + '-' + group.name;
+        rows.push({ key, elements: group.markups });
+        if (this.isOpen(key)) group.markups.forEach(m => rows.push({ key: 'm-' + m.id, elements: [m] }));
+      }
+    });
+    return rows;
+  }
+
+  // MARK: - Search
+  searching(): boolean { return this.filter().trim() !== ''; }
+
+  private hit(name: string): boolean {
+    return name.toLowerCase().includes(this.filter().trim().toLowerCase());
+  }
+
+  pageMatches(index: number): boolean { return !this.searching() || this.hit(this.store.pageName(index)); }
+  matchingItems(items: TakeoffItem[]): TakeoffItem[] { return items.filter(i => this.hit(i.name)); }
+  matchingGroups(groups: MarkupGroup[]): MarkupGroup[] { return groups.filter(g => this.hit(g.name)); }
+
+  // While searching, pages shown only for their matching elements are open
+  pageOpen(index: number, pageHit: boolean): boolean {
+    return this.isOpen('page-' + index) || (this.searching() && !pageHit);
+  }
+
+  noMatches(): boolean {
+    const s = this.store;
+    return s.pages.every((_, i) => !this.hit(s.pageName(i)) &&
+      this.matchingItems(s.itemsOnPage(i)).length === 0 &&
+      this.matchingGroups(this.otherGroups(i, s.itemsOnPage(i))).length === 0);
+  }
 
   toggle(key: string): void {
     this.open.update(set => {

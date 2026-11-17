@@ -17,7 +17,8 @@ import { OverlayPanel } from '../overlay-panel/overlay-panel';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
 const MIN_ZOOM = 0.05;
-type DragMode = 'pan' | 'move' | 'marquee' | 'viewport' | 'ocr' | 'snapshot' | 'overlay' | 'markup' | 'labels';
+type DragMode = 'pan' | 'move' | 'marquee' | 'viewport' | 'ocr' | 'snapshot' | 'overlay' | 'overlayScale' | 'overlayRotate'
+  | 'markup' | 'labels';
 const MAX_ZOOM = 40;
 const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7 M pixels
 
@@ -60,6 +61,7 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
             <g [appShapes]="searchShapes()"></g>
             <g [appShapes]="liveShapes()"></g>
             <g [appShapes]="markupPreview()"></g>
+            <g [appShapes]="overlayHandles()"></g>
           </svg>
         </div>
         <!-- Text of a text box or callout, typed right on the plan -->
@@ -138,6 +140,53 @@ export class PlanView implements OnDestroy {
   private overlayDrawn: { canvas: HTMLCanvasElement; source: PageGeometry } | null = null;
   // Snapshot being pasted: center of the picture under the cursor (view coordinates)
   private readonly ghost = signal<Pt | null>(null);
+
+  // Corners of the page on top as drawn on the base page (view coordinates): TL, TR, BR, BL,
+  // its center, and the rotation handle above the top edge
+  private overlayFrame(): { corners: Pt[]; center: Pt; rotate: Pt } | null {
+    const o = this.overlayHere(), src = this.overlaySource();
+    if (!o || !src || !o.adjusting) return null;
+    const a = o.rotation * Math.PI / 180, cos = Math.cos(a), sin = Math.sin(a);
+    const center = { x: src.width / 2 + o.dx, y: src.height / 2 + o.dy };
+    const place = (x: number, y: number): Pt => {
+      const vx = (x - src.width / 2) * o.scale, vy = (y - src.height / 2) * o.scale;
+      return { x: center.x + vx * cos - vy * sin, y: center.y + vx * sin + vy * cos };
+    };
+    const corners = [place(0, 0), place(src.width, 0), place(src.width, src.height), place(0, src.height)];
+    const topMid = { x: (corners[0].x + corners[1].x) / 2, y: (corners[0].y + corners[1].y) / 2 };
+    const len = Math.hypot(topMid.x - center.x, topMid.y - center.y) || 1;
+    const out = 28 / this.zoom();
+    const rotate = { x: topMid.x + (topMid.x - center.x) / len * out, y: topMid.y + (topMid.y - center.y) / len * out };
+    return { corners, center, rotate };
+  }
+
+  // Frame and handles of the page on top while Move is on (corners scale, the round handle rotates)
+  readonly overlayHandles = computed<Shape[]>(() => {
+    this.store.watch();
+    const f = this.overlayFrame();
+    if (!f) return [];
+    const px = 1 / this.zoom(), color = COLORS.blue;
+    const [a, b, c, d] = f.corners;
+    const shapes: Shape[] = [{
+      d: `M${a.x} ${a.y}L${b.x} ${b.y}L${c.x} ${c.y}L${d.x} ${d.y}Z`, fill: 'none', stroke: color, width: 1.5 * px,
+      dash: `${6 * px} ${4 * px}`, opacity: 1,
+    }];
+    const topMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    shapes.push({ d: `M${topMid.x} ${topMid.y}L${f.rotate.x} ${f.rotate.y}`, fill: 'none', stroke: color, width: 1.5 * px, opacity: 1 });
+    const h = 5 * px;
+    for (const p of f.corners) {
+      shapes.push({ d: rectPath({ x: p.x - h, y: p.y - h, w: 2 * h, h: 2 * h }), fill: '#ffffff', stroke: color, width: 1.5 * px, opacity: 1 });
+    }
+    const r = 6 * px;
+    shapes.push({
+      d: `M${f.rotate.x - r} ${f.rotate.y}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0Z`,
+      fill: '#ffffff', stroke: color, width: 1.5 * px, opacity: 1,
+    });
+    return shapes;
+  });
+
+  // Values when a scale / rotate handle was grabbed
+  private overlayGrab: { scale: number; rotation: number; distance: number; angle: number; center: Pt } | null = null;
 
   overlayTransform(o: OverlayState): string {
     return `translate(${o.dx}px, ${o.dy}px) rotate(${o.rotation}deg) scale(${o.scale})`;
@@ -698,8 +747,21 @@ export class PlanView implements OnDestroy {
       return;
     }
 
-    // Overlay "Move": dragging moves the page on top
-    if (this.overlayHere()?.adjusting) return start('overlay');
+    // Overlay "Move": a corner scales the page on top, the round handle rotates it, elsewhere moves it
+    const overlay = this.overlayHere();
+    if (overlay?.adjusting) {
+      const f = this.overlayFrame();
+      const near = (p: Pt) => Math.hypot(p.x - view.x, p.y - view.y) * this.zoom() < 9;
+      if (f && (near(f.rotate) || f.corners.some(near))) {
+        this.overlayGrab = {
+          scale: overlay.scale, rotation: overlay.rotation, center: f.center,
+          distance: Math.hypot(view.x - f.center.x, view.y - f.center.y) || 1,
+          angle: Math.atan2(view.y - f.center.y, view.x - f.center.x),
+        };
+        return start(near(f.rotate) ? 'overlayRotate' : 'overlayScale');
+      }
+      return start('overlay');
+    }
 
     // Measuring: every click adds a point (snapped if Snap is on); double click closes it.
     // A double click is a second click on the same spot within 0.4 s
@@ -814,6 +876,23 @@ export class PlanView implements OnDestroy {
       case 'overlay': {
         const o = this.store.overlay();
         if (o) this.store.updateOverlay({ dx: o.dx + dx / this.zoom(), dy: o.dy + dy / this.zoom() });
+        break;
+      }
+      case 'overlayScale': {
+        const grab = this.overlayGrab;
+        if (!grab) break;
+        const distance = Math.hypot(view.x - grab.center.x, view.y - grab.center.y);
+        this.store.updateOverlay({ scale: Math.min(10, Math.max(0.05, grab.scale * distance / grab.distance)) });
+        break;
+      }
+      case 'overlayRotate': {
+        const grab = this.overlayGrab;
+        if (!grab) break;
+        const angle = Math.atan2(view.y - grab.center.y, view.x - grab.center.x);
+        let rotation = grab.rotation + (angle - grab.angle) * 180 / Math.PI;
+        rotation = ((rotation + 540) % 360) - 180;
+        if (e.shiftKey) rotation = Math.round(rotation / 15) * 15;      // Shift: steps of 15°
+        this.store.updateOverlay({ rotation: Math.round(rotation * 10) / 10 });
         break;
       }
     }

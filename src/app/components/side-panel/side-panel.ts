@@ -6,9 +6,9 @@ import { SearchPanel } from '../search-panel/search-panel';
 import { TemplatesPanel } from '../templates-panel/templates-panel';
 import { Icon } from '../icon/icon';
 
-export type SidePanelTab = 'settings' | 'search' | 'scale' | 'templates' | 'ai';
+export type SidePanelTab = 'settings' | 'search' | 'scale' | 'templates' | 'costdb' | 'ai';
 
-// Right side bar like Bluebeam Revu: a column of icons on the edge (Settings, Search, Scale, Templates, AI)
+// Right side bar like Bluebeam Revu: a column of icons on the edge (Settings, Search, Scale, Templates, Cost Database, AI)
 // and the panel of the chosen one. Clicking the open panel's icon again hides the panel.
 // ⌘F / Ctrl+F opens Search.
 @Component({
@@ -26,6 +26,7 @@ export type SidePanelTab = 'settings' | 'search' | 'scale' | 'templates' | 'ai';
             @case ('search') { <app-search-panel /> }
             @case ('scale') { <app-scale-panel /> }
             @case ('templates') { <app-templates-panel /> }
+            @case ('costdb') { <app-templates-panel [database]="true" /> }
             @case ('ai') { <app-ai-panel /> }
           }
         </div>
@@ -65,12 +66,13 @@ export class SidePanel {
   readonly tab = signal<SidePanelTab>('settings');
   private readonly searchPanel = viewChild(SearchPanel);
 
-  readonly titles: Record<SidePanelTab, string> = { settings: 'Properties', search: 'Search', scale: 'Scale', templates: 'Templates', ai: 'AI Assistant' };
+  readonly titles: Record<SidePanelTab, string> = { settings: 'Properties', search: 'Search', scale: 'Scale', templates: 'Templates', costdb: 'Cost Database', ai: 'AI Assistant' };
   readonly buttons: { tab: SidePanelTab; icon: string; title: string }[] = [
     { tab: 'settings', icon: 'settings', title: 'Settings (Properties)' },
     { tab: 'search', icon: 'search', title: 'Search (⌘F)' },
     { tab: 'scale', icon: 'straighten', title: 'Scale' },
     { tab: 'templates', icon: 'library_books', title: 'Templates' },
+    { tab: 'costdb', icon: 'database', title: 'Cost Database' },
     { tab: 'ai', icon: 'auto_awesome', title: 'AI Assistant' },
   ];
 

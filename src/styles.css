@@ -341,7 +341,17 @@ app-estimate-view.estimate {
   background: var(--bg);
   z-index: 5;
 }
-.estimate-title { font-weight: 600; font-size: 14px; padding: 8px 12px; }
+.estimate-title { font-weight: 600; font-size: 14px; padding: 6px 12px; display: flex; align-items: center; gap: 12px; }
+.estimate-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.estimate-search { width: 260px; flex: none; font-weight: normal; }
+.estimate-table .match { background: rgba(255, 204, 0, 0.35); border-radius: 3px; }
+
+/* Search box of the side bars and the estimate */
+.side-search { display: flex; align-items: center; gap: 4px; padding: 0 2px 0 6px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px; }
+.side-search input { flex: 1; min-width: 0; border: none; background: transparent; padding: 4px 0; outline: none; font-size: 12px; }
+.side-search .icon-button { padding: 2px; }
+.sidebar-search { margin: 0 8px 6px; }
 .estimate-table { width: 100%; border-collapse: collapse; }
 .estimate-table th {
   text-align: left;
@@ -535,3 +545,15 @@ app-templates-view.templates-view:focus { outline: none; }
 .templates-fields label { display: flex; align-items: center; gap: 6px; }
 .templates-props { max-height: none; }
 .templates-detail p { margin: 0; }
+
+/* Shift + click selects a range of rows: no text selection while clicking */
+.estimate-table tbody, app-takeoff-tree .tree-row { user-select: none; }
+
+/* Estimate filters: the row under the headers and the bar of the Filter builder */
+.estimate-table .filter-row th { padding: 2px 4px; border-bottom: 1px solid var(--border); top: var(--estimate-head, 28px); z-index: 1; }
+.estimate-table .filter-row input { width: 100%; min-width: 0; box-sizing: border-box; font-size: 11px; padding: 2px 6px;
+  border: 1px solid transparent; border-radius: 4px; background: var(--panel); font-weight: normal; }
+.estimate-table .filter-row input:focus, .estimate-table .filter-row input.on { border-color: var(--accent); }
+.filter-bar { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12px; background: var(--accent-soft);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.filter-bar .filter-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
