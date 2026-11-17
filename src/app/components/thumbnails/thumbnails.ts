@@ -6,8 +6,7 @@ import { DrawingStore } from '../../services/drawing.store/drawing.store';
 import { renderRegion } from '../../services/pdf-render/pdf-render';
 import { pageShapes } from '../../services/shapes/shapes';
 import { PageLabeler } from '../../services/page-labels/page-labels';
-import { InsertPagesDialog } from '../insert-pages-dialog/insert-pages-dialog';
-import { PageLabelsDialog } from '../page-labels-dialog/page-labels-dialog';
+import { SlipSheet } from '../../services/slip-sheet/slip-sheet';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 import { Icon } from '../icon/icon';
 
@@ -65,7 +64,7 @@ export class PageThumb implements OnDestroy {
       if (!g || !canvas || !this.visible() || this.drawn === g) return;
       this.drawn = g;
       const scale = (THUMB_WIDTH * 2) / g.width;          // ×2 for Retina
-      renderRegion(g.page, { x: 0, y: 0, w: g.width, h: g.height }, scale).then(result => {
+      renderRegion(g, { x: 0, y: 0, w: g.width, h: g.height }, scale).then(result => {
         if (!result || this.drawn !== g) return;
         canvas.width = result.width;
         canvas.height = result.height;
@@ -88,7 +87,7 @@ export class PageThumb implements OnDestroy {
 // Click = go to the page, Ctrl/⌘ + click = add to the selection, Shift + click = a range.
 @Component({
   selector: 'app-thumbnails',
-  imports: [Icon, InsertPagesDialog, PageLabelsDialog, PageThumb],
+  imports: [Icon, PageThumb],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'thumbnails',
@@ -127,6 +126,8 @@ export class PageThumb implements OnDestroy {
               (click)="deleteSelected()"><app-icon class="icon small" name="delete" /></button>
       <button class="icon-button" title="Create Page Labels: name the pages from bookmarks or from a region"
               [disabled]="!s.hasDocument" (click)="labeler.open()"><app-icon class="icon small" name="label" /></button>
+      <button class="icon-button" title="Slip Sheet: replace the pages with the same name with the pages of another PDF (an addendum), keeping markups and measurements"
+              [disabled]="!s.hasDocument || slipSheet.busy()" (click)="slipSheet.pick()"><app-icon class="icon small" name="restore_page" /></button>
       <span class="count">{{ selectedList().length > 1 ? selectedList().length + ' of ' : '' }}{{ s.pageCount }} pages</span>
     </div>
 
@@ -164,11 +165,6 @@ export class PageThumb implements OnDestroy {
       </div>
     }
 
-    @if (labeler.dialogOpen() && !labeler.selecting()) { <app-page-labels-dialog /> }
-
-    @for (request of s.insertRequest ? [s.insertRequest] : []; track request.id) {
-      <app-insert-pages-dialog />
-    }
   `,
 })
 export class Thumbnails {
@@ -176,6 +172,7 @@ export class Thumbnails {
   // Search box above the list: only pages whose name contains this
   readonly filter = input('');
   readonly labeler = inject(PageLabeler);
+  readonly slipSheet = inject(SlipSheet);
   // Pages selected besides the current one (indexes); cleared whenever the pages change
   private readonly extra = signal<Set<number>>(new Set());
   private anchor: number | null = null;

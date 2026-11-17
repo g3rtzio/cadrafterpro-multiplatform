@@ -1,8 +1,12 @@
-import { ChangeDetectionStrategy, Component, inject, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, afterEveryRender, inject, output, signal } from '@angular/core';
 import { COLORS, SCALE_GROUPS, TakeoffKind, kindIcon, kindTitle } from '../../models/takeoff';
 import { DrawingStore, RibbonTab } from '../../services/drawing.store/drawing.store';
 import { MARKUP_TOOLS, MarkupTools } from '../../services/markup-tools/markup-tools';
+import { TextSelect } from '../../services/text-select/text-select';
+import { SlipSheet } from '../../services/slip-sheet/slip-sheet';
 import { OcrService } from '../../services/ocr/ocr';
+import { PageLabeler } from '../../services/page-labels/page-labels';
+import { CalcTools } from '../../services/calc-tools/calc-tools';
 import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { presetFilters } from '../../models/estimate-filter';
 import { Icon } from '../icon/icon';
@@ -125,6 +129,36 @@ import { Icon } from '../icon/icon';
           <div class="ribbon-group-title">Takeoff</div>
         </div>
 
+        <!-- Calculations: roof pitch of areas and lines -->
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <!-- Pitch: click = measure a sloped line on the plan; arrow = apply a pitch to areas and lines -->
+            <div class="menu-anchor ribbon-split" [class.active]="calc.mode() === 'pitch'">
+              <button class="ribbon-button" [disabled]="!s.hasDocument" (click)="calc.start('pitch')"
+                      title="Pitch: click the start and the end of a sloped line to see its pitch (rise per 12)">
+                <app-icon class="icon" [style.color]="colors.red" name="roofing" /><span>Pitch</span>
+              </button>
+              <button class="ribbon-arrow" [disabled]="!s.hasDocument" (click)="toggleMenu('pitch', $event)">
+                <app-icon class="icon small" name="expand_more" />
+              </button>
+              @if (openMenu() === 'pitch') {
+                <div class="menu" (click)="$event.stopPropagation()">
+                  <button class="menu-item" (click)="openMenu.set(null); calc.start('pitch')">Measure Pitch on the Plan</button>
+                  <button class="menu-item" (click)="openMenu.set(null); s.openPitch(calc.lastPitch())">Apply Pitch to Areas and Lines…</button>
+                  <div class="menu-divider"></div>
+                  <button class="menu-item" [disabled]="calc.items().length === 0" (click)="openMenu.set(null); calc.clear()">Clear Pitch Lines and Triangles</button>
+                </div>
+              }
+            </div>
+            <button class="ribbon-button" [class.active]="calc.mode() === 'triangulate'" [disabled]="!s.hasDocument"
+                    title="Triangulate: click three points to see the length of each side and the angle of each corner"
+                    (click)="calc.start('triangulate')">
+              <app-icon class="icon" [style.color]="colors.red" name="change_history" /><span>Triangulate</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Calculations</div>
+        </div>
+
         <!-- Markup (like Revu): text box, callout, cloud, shapes, lines, pen and highlight -->
         <div class="ribbon-group">
           <div class="markup-grid">
@@ -134,6 +168,10 @@ import { Icon } from '../icon/icon';
                 <app-icon class="icon" [name]="t.icon" />
               </button>
             }
+            <button class="markup-button" [class.active]="textSelect.active()" [disabled]="!s.hasDocument"
+                    title="Select Text — drag over the text (or a box around it), then Copy or Ctrl+C" (click)="textSelect.toggle()">
+              <app-icon class="icon" name="text_select_start" />
+            </button>
           </div>
           <div class="ribbon-group-title">Markup</div>
         </div>
@@ -182,6 +220,69 @@ import { Icon } from '../icon/icon';
             </div>
           </div>
           <div class="ribbon-group-title">Text</div>
+        </div>
+
+      } @else if (s.ribbonTab === 'Page') {
+        <!-- Page tab (like PlanSwift): add, name, sort, rotate, replace and delete pages -->
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" title="Add a blank page after this one" [disabled]="!s.hasDocument"
+                    (click)="s.insertBlankPage(s.currentPageIndex + 1)">
+              <app-icon class="icon" [style.color]="colors.blue" name="note_add" /><span>Blank Page</span>
+            </button>
+            <button class="ribbon-button" title="Add pages from another PDF after this one" [disabled]="!s.hasDocument"
+                    (click)="pickPages()">
+              <app-icon class="icon" [style.color]="colors.blue" name="post_add" /><span>From PDF</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Add</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" title="Batch Rename Pages: name the pages from bookmarks or from a region (sheet number)"
+                    [disabled]="!s.hasDocument" (click)="labeler.open()">
+              <app-icon class="icon" [style.color]="colors.orange" name="label" /><span>Batch Rename</span>
+            </button>
+            <button class="ribbon-button" title="Sort the pages by name (A-2 before A-10)" [disabled]="!s.hasDocument || s.pageCount < 2"
+                    (click)="s.sortPagesByName()">
+              <app-icon class="icon" [style.color]="colors.orange" name="sort_by_alpha" /><span>Sort by Name</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Rename / Sort</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" title="Rotate this page 90° to the left" [disabled]="!s.hasDocument"
+                    (click)="s.rotatePages([s.currentPageIndex], -90)">
+              <app-icon class="icon" [style.color]="colors.green" name="rotate_left" /><span>Rotate Left</span>
+            </button>
+            <button class="ribbon-button" title="Rotate this page 90° to the right" [disabled]="!s.hasDocument"
+                    (click)="s.rotatePages([s.currentPageIndex], 90)">
+              <app-icon class="icon" [style.color]="colors.green" name="rotate_right" /><span>Rotate Right</span>
+            </button>
+            <button class="ribbon-button" title="Rotate this page 180°" [disabled]="!s.hasDocument"
+                    (click)="s.rotatePages([s.currentPageIndex], 180)">
+              <app-icon class="icon" [style.color]="colors.green" name="rotate_90_degrees_cw" /><span>Rotate 180</span>
+            </button>
+            <button class="ribbon-button" title="Batch Rotate Pages: rotate all pages or a range" [disabled]="!s.hasDocument"
+                    (click)="s.openBatchRotate()">
+              <app-icon class="icon" [style.color]="colors.green" name="screen_rotation_alt" /><span>Batch Rotate</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Rotate</div>
+        </div>
+        <div class="ribbon-group">
+          <div class="ribbon-buttons">
+            <button class="ribbon-button" [disabled]="!s.hasDocument || slipSheet.busy()" (click)="slipSheet.pick()"
+                    title="Slip Sheet: replace the pages with the same name with the pages of another PDF (an addendum), keeping markups and measurements">
+              <app-icon class="icon" [style.color]="colors.blue" name="restore_page" /><span>Slip Sheet</span>
+            </button>
+            <button class="ribbon-button" title="Delete this page and what was measured on it (can't be undone)"
+                    [disabled]="!s.hasDocument || s.pageCount < 2" (click)="deletePage()">
+              <app-icon class="icon" [style.color]="colors.red" name="delete" /><span>Delete Page</span>
+            </button>
+          </div>
+          <div class="ribbon-group-title">Replace / Delete</div>
         </div>
       } @else if (s.ribbonTab === 'Estimating') {
         <!-- Estimating tab: groups, export, parts, properties and columns -->
@@ -449,7 +550,36 @@ import { Icon } from '../icon/icon';
 })
 export class Ribbon {
   readonly store = inject(DrawingStore);
+
+  // MARK: - Fitting the tools in the window
+  // When the tools don't fit, the ribbon gets more compact step by step:
+  // 1 = narrower buttons, 2 = icons only (the name stays in the tooltip), 3 = scrolls sideways.
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement;
+  private fittedFor = '';
+
+  constructor() {
+    const observer = new ResizeObserver(() => this.fit(true));
+    observer.observe(this.host);
+    inject(DestroyRef).onDestroy(() => observer.disconnect());
+    // Another tab (or a document opened) has other tools: fit again after it is drawn
+    afterEveryRender(() => this.fit(false));
+  }
+
+  private fit(force: boolean): void {
+    const tools = this.host.querySelector<HTMLElement>('.ribbon-tools');
+    if (!tools) return;
+    const key = `${this.host.clientWidth}|${this.store.ribbonTab}|${this.store.hasDocument}`;
+    if (!force && key === this.fittedFor) return;
+    this.fittedFor = key;
+    const levels = ['ribbon-compact', 'ribbon-icons', 'ribbon-scroll'];
+    this.host.classList.remove(...levels);
+    for (let level = 0; level < levels.length && tools.scrollWidth > tools.clientWidth + 1; level++) {
+      this.host.classList.add(levels[level]);
+    }
+  }
   readonly markups = inject(MarkupTools);
+  readonly textSelect = inject(TextSelect);
+  readonly slipSheet = inject(SlipSheet);
   readonly markupTools = MARKUP_TOOLS;
   readonly ocr = inject(OcrService);
   readonly library = inject(TemplateLibrary);
@@ -461,7 +591,28 @@ export class Ribbon {
   costParts() { return this.costDatabase.watch().data.templates.filter(t => t.isPart).sort((a, b) => a.name.localeCompare(b.name)); }
   readonly openFile = output<void>();
   readonly openMenu = signal<string | null>(null);
-  readonly tabs: RibbonTab[] = ['Home', 'Estimating', 'Templates', 'Cost Database'];
+  readonly tabs: RibbonTab[] = ['Home', 'Page', 'Estimating', 'Templates', 'Cost Database'];
+  readonly labeler = inject(PageLabeler);
+  readonly calc = inject(CalcTools);
+
+  // Page tab: pages of another PDF go after the current page (the Insert Pages window asks which)
+  pickPages(): void {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/pdf,.pdf';
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      if (file) await this.store.requestInsertPages(new Uint8Array(await file.arrayBuffer()), file.name, this.store.currentPageIndex + 1);
+    });
+    input.click();
+  }
+
+  deletePage(): void {
+    const s = this.store;
+    if (confirm(`Delete ${s.pageName(s.currentPageIndex)} and everything measured on it? This can't be undone.`)) {
+      s.deletePages([s.currentPageIndex]);
+    }
+  }
   readonly scaleGroups = SCALE_GROUPS;
   readonly colors = COLORS;
   readonly takeoffs: { kind: TakeoffKind; color: string }[] = [

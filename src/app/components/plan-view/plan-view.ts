@@ -13,12 +13,14 @@ import { PageLabeler } from '../../services/page-labels/page-labels';
 import { MarkupTools } from '../../services/markup-tools/markup-tools';
 import { Shape, TEXT_FONT, markupShapes, pageShapes, pathOf, rectPath, viewportShapes } from '../../services/shapes/shapes';
 import { TextSearch } from '../../services/text-search/text-search';
+import { TextSelect } from '../../services/text-select/text-select';
+import { CalcTools } from '../../services/calc-tools/calc-tools';
 import { OverlayPanel } from '../overlay-panel/overlay-panel';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
 const MIN_ZOOM = 0.05;
 type DragMode = 'pan' | 'move' | 'marquee' | 'viewport' | 'ocr' | 'snapshot' | 'overlay' | 'overlayScale' | 'overlayRotate'
-  | 'markup' | 'labels';
+  | 'markup' | 'labels' | 'text';
 const MAX_ZOOM = 40;
 const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7 M pixels
 
@@ -34,6 +36,8 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
       background: rgba(255, 255, 255, 0.92); border: 1px dashed #007aff; border-radius: 0; outline: none; white-space: pre-wrap; }
     .tint-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
     .overlay-canvas { transform-origin: 50% 50%; pointer-events: none; }
+    .text-copy-button { position: absolute; z-index: 5; padding: 2px 10px; font-size: 12px; border-radius: 6px;
+      background: #007aff; color: #fff; border: none; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25); cursor: pointer; }
   `],
   template: `
     <div #host class="plan-host" [style.cursor]="cursor()"
@@ -59,11 +63,26 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
             <g [appShapes]="shapes()"></g>
             <g [appShapes]="ocrShapes()"></g>
             <g [appShapes]="searchShapes()"></g>
+            <g [appShapes]="textShapes()"></g>
+            <g [appShapes]="calcShapes()"></g>
             <g [appShapes]="liveShapes()"></g>
             <g [appShapes]="markupPreview()"></g>
             <g [appShapes]="overlayHandles()"></g>
           </svg>
         </div>
+        <!-- Pitch measured on the plan: apply it to roof areas and lines -->
+        @if (pitchButton(); as b) {
+          <button type="button" class="text-copy-button" [style.left.px]="b.x" [style.top.px]="b.y"
+                  title="Apply this pitch to areas and lines" (mousedown)="$event.stopPropagation()"
+                  (click)="store.openPitch(b.pitch)">Apply {{ b.pitch }}/12…</button>
+        }
+        <!-- Select Text: copy button next to the selected text -->
+        @if (copyButton(); as c) {
+          <button type="button" class="text-copy-button" [style.left.px]="c.x" [style.top.px]="c.y"
+                  title="Copy the selected text (Ctrl+C)" (mousedown)="$event.stopPropagation()" (click)="textSelect.copy()">
+            Copy
+          </button>
+        }
         <!-- Text of a text box or callout, typed right on the plan -->
         @if (editor(); as ed) {
           <textarea #editorField class="markup-editor" [value]="ed.markup.contents" placeholder="Type…"
@@ -96,6 +115,8 @@ export class PlanView implements OnDestroy {
   readonly store = inject(DrawingStore);
   readonly markups = inject(MarkupTools);
   readonly search = inject(TextSearch);
+  readonly textSelect = inject(TextSelect);
+  readonly calc = inject(CalcTools);
   readonly textFont = TEXT_FONT;
   private readonly editorField = viewChild<ElementRef<HTMLTextAreaElement>>('editorField');
   readonly ocr = inject(OcrService);
@@ -204,6 +225,8 @@ export class PlanView implements OnDestroy {
     if (s.snapshotMode === 'capture' || this.labeler.selecting()) return 'crosshair';
     if (s.snapshotMode === 'place') return 'copy';
     if (this.overlayHere()?.adjusting) return 'move';
+    if (this.textSelect.active()) return 'text';
+    if (this.calc.mode()) return 'crosshair';
     if (s.tool !== 'none' || s.drawingViewport || this.markups.tool() || this.ocr.drawingRegion()) return 'crosshair';
     if (this.panning()) return 'grabbing';
     switch (s.interaction) {
@@ -337,6 +360,93 @@ export class PlanView implements OnDestroy {
     return shapes;
   });
 
+  // Select Text: the selected words on this page
+  readonly textShapes = computed<Shape[]>(() => {
+    const g = this.geometry();
+    const sel = this.textSelect.selection();
+    if (!g || !sel || sel.pageIndex !== this.pageIndex()) return [];
+    return sel.words.map(w => {
+      const r = g.rectToView(w.rect);
+      return { d: rectPath({ x: r.x - 0.5, y: r.y, w: r.w + 1, h: r.h }), fill: COLORS.blue, fillOpacity: 0.3,
+        stroke: 'none', width: 0, opacity: 1, blend: 'multiply' } as Shape;
+    });
+  });
+
+  // Pitch lines and triangles measured with the Calculation tools (yellow labels like PlanSwift)
+  readonly calcShapes = computed<Shape[]>(() => {
+    this.store.watch();
+    const g = this.geometry();
+    if (!g) return [];
+    const px = 1 / this.zoom();
+    const shapes: Shape[] = [];
+    const red = COLORS.red;
+    const label = (at: Pt, text: string) => {
+      const w = (text.length * 6.6 + 10) * px, h = 17 * px;
+      shapes.push({ d: rectPath({ x: at.x - w / 2, y: at.y - h / 2, w, h }), fill: '#FFF59D', fillOpacity: 0.95,
+        stroke: '#B59F00', width: px, opacity: 1 });
+      shapes.push({ text, x: at.x, y: at.y, fill: '#0D47A1', stroke: 'none', width: 0, opacity: 1, fontSize: 12 * px,
+        fontWeight: '600', anchor: 'middle', baseline: 'middle' });
+    };
+    const dot = (v: Pt) => shapes.push({ d: circle(v, 3 * px), fill: red, stroke: 'none', width: 0, opacity: 1 });
+    const draw = (kind: 'pitch' | 'triangulate', points: Pt[], live: boolean) => {
+      const v = points.map(p => g.toView(p));
+      const closed = kind === 'triangulate' && points.length === 3 && !live;
+      shapes.push({ d: pathOf(v, closed), fill: 'none', stroke: kind === 'pitch' ? COLORS.blue : red, width: 1.5 * px,
+        dash: live ? `${6 * px} ${4 * px}` : undefined, opacity: 1 });
+      v.forEach(dot);
+      if (kind === 'pitch' && points.length === 2) {
+        const pitch = this.calc.pitchOf(g, points[0], points[1]);
+        label({ x: v[1].x + 50 * px, y: v[1].y - 14 * px }, this.calc.pitchText(pitch));
+      }
+      if (kind === 'triangulate') {
+        const sides = closed ? [[0, 1], [1, 2], [2, 0]] : v.slice(1).map((_, i) => [i, i + 1]);
+        for (const [i, j] of sides) {
+          label({ x: (v[i].x + v[j].x) / 2, y: (v[i].y + v[j].y) / 2 }, this.calc.lengthText(g, points[i], points[j]));
+        }
+        if (closed) {
+          const cx = (v[0].x + v[1].x + v[2].x) / 3, cy = (v[0].y + v[1].y + v[2].y) / 3;
+          for (let k = 0; k < 3; k++) {
+            const angle = this.calc.angleAt(points[(k + 2) % 3], points[k], points[(k + 1) % 3]);
+            // Inside the corner, a little toward the middle of the triangle
+            const d = Math.hypot(cx - v[k].x, cy - v[k].y) || 1;
+            const step = Math.min(28 * px, d * 0.45);
+            label({ x: v[k].x + (cx - v[k].x) / d * step, y: v[k].y + (cy - v[k].y) / d * step }, `${angle.toFixed(2)}°`);
+          }
+        }
+      }
+    };
+    for (const item of this.calc.items()) if (item.page === g) draw(item.kind, item.points, false);
+    // In progress: the points so far and the line to the cursor
+    const now = this.calc.current();
+    const mode = this.calc.mode();
+    const hover = this.hover();
+    if (mode && now && now.page === g) draw(mode, hover ? [...now.points, hover.point] : now.points, true);
+    return shapes;
+  });
+
+  // "Apply …/12" next to the last pitch measured on this page
+  readonly pitchButton = computed<(Pt & { pitch: number }) | null>(() => {
+    const g = this.geometry();
+    if (!g || !this.calc.mode()) return null;
+    const last = [...this.calc.items()].reverse().find(i => i.kind === 'pitch' && i.page === g);
+    if (!last) return null;
+    const pitch = this.calc.pitchOf(g, last.points[0], last.points[1]);
+    if (!isFinite(pitch)) return null;
+    const v = g.toView(last.points[1]);
+    return { x: this.ox() + v.x * this.zoom() + 8, y: this.oy() + v.y * this.zoom() + 6, pitch: Math.round(pitch * 100) / 100 };
+  });
+
+  // Copy button under the last selected word (screen position in the pane)
+  readonly copyButton = computed<Pt | null>(() => {
+    const g = this.geometry();
+    const sel = this.textSelect.selection();
+    if (!g || !sel || sel.pageIndex !== this.pageIndex() || !this.textSelect.active()) return null;
+    const last = sel.words[sel.words.length - 1];
+    if (!last) return null;
+    const r = g.rectToView(last.rect);
+    return { x: this.ox() + (r.x + r.w) * this.zoom() + 4, y: this.oy() + (r.y + r.h) * this.zoom() + 4 };
+  });
+
   // Markup being drawn (drag, freehand or clicks), drawn exactly as it will look
   private readonly markupPath = signal<Pt[] | null>(null);
   readonly markupPreview = computed<Shape[]>(() => {
@@ -458,7 +568,7 @@ export class PlanView implements OnDestroy {
       if (!canvas || (this.overlayDrawn?.canvas === canvas && this.overlayDrawn.source === source)) return;
       this.overlayDrawn = { canvas, source };
       const scale = Math.min(4000 / Math.max(source.width, source.height), 3);
-      renderRegion(source.page, { x: 0, y: 0, w: source.width, h: source.height }, scale).then(result => {
+      renderRegion(source, { x: 0, y: 0, w: source.width, h: source.height }, scale).then(result => {
         if (!result || this.overlayDrawn?.source !== source) return;
         canvas.width = result.width;
         canvas.height = result.height;
@@ -635,7 +745,7 @@ export class PlanView implements OnDestroy {
 
   private refreshHover(e: MouseEvent): void {
     const s = this.store;
-    if (s.tool === 'none' && !this.markups.tool()) {
+    if (s.tool === 'none' && !this.markups.tool() && !this.calc.mode()) {
       if (this.hover()) this.hover.set(null);
       return;
     }
@@ -666,6 +776,8 @@ export class PlanView implements OnDestroy {
       return last && last.pageIndex === page ? last.point : null;
     }
     if (this.drag?.mode === 'markup') return this.markupPath()?.[0] ?? null;
+    const calc = this.calc.current();
+    if (calc && calc.page === this.geometry()) return calc.points[calc.points.length - 1];
     const clicks = this.markups.clicks();
     if (clicks && clicks.pageIndex === page && clicks.points.length) return clicks.points[clicks.points.length - 1];
     return null;
@@ -717,6 +829,20 @@ export class PlanView implements OnDestroy {
 
     // Viewport: start its box
     if (s.drawingViewport) return start('viewport');
+
+    // Pitch / Triangulate: every click adds a point (with Snap and Ortho)
+    if (this.calc.mode()) {
+      const target = this.snap(page, e);
+      this.calc.addPoint(g, target.point);
+      this.hover.set(target);
+      return;
+    }
+
+    // Select Text: from a word = the words up to the cursor, from an empty spot = a box
+    if (this.textSelect.active()) {
+      void this.textSelect.begin(this.pageIndex(), page, 2 / this.zoom() + 1);
+      return start('text');
+    }
 
     // Markup tools: clicks for a polyline or polygon (double click finishes), a drag for the rest
     if (this.markups.tool() && s.tool === 'none') {
@@ -866,6 +992,10 @@ export class PlanView implements OnDestroy {
         d.lastPage = page;
         break;
       }
+      case 'text':
+        if (this.textSelect.startedOnWord) void this.textSelect.extend(g.toPage(view), 2 / this.zoom() + 1);
+        else this.marquee.set(rectFromPoints(d.startView, view));
+        break;
       case 'marquee':
       case 'viewport':
       case 'snapshot':
@@ -920,6 +1050,11 @@ export class PlanView implements OnDestroy {
       }
       case 'move':
         if (d.started) s.finishMove();
+        break;
+      case 'text':
+        if (box && !this.textSelect.startedOnWord && box.w * this.zoom() > 3 && box.h * this.zoom() > 3) {
+          void this.textSelect.selectBox(this.pageIndex(), g.rectToPage(box));
+        }
         break;
       case 'viewport':
         // Mouse up on a viewport box: hand it to the model
@@ -1000,6 +1135,30 @@ export class PlanView implements OnDestroy {
       this.ocr.cancelRegion();
       return;
     }
+    // Pitch / Triangulate: Esc drops the points in progress, then leaves the tool
+    if (this.calc.mode() && e.key === 'Escape') {
+      this.calc.escape();
+      this.hover.set(null);
+      return;
+    }
+    // Select Text: Ctrl+C copies, Ctrl+A selects the page, Esc clears the selection then leaves the tool
+    if (this.textSelect.active()) {
+      const command = e.ctrlKey || e.metaKey;
+      if (command && e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        void this.textSelect.copy();
+        return;
+      }
+      if (command && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        void this.textSelect.selectAll(this.pageIndex());
+        return;
+      }
+      if (e.key === 'Escape') {
+        if (this.textSelect.selection()) this.textSelect.selection.set(null); else this.textSelect.stop();
+        return;
+      }
+    }
     // Markup tools: Enter finishes a polyline / polygon, Esc leaves the tool
     if (this.markups.tool() && (e.key === 'Enter' || e.key === 'Escape')) {
       e.preventDefault();
@@ -1030,6 +1189,11 @@ export class PlanView implements OnDestroy {
   // Double click on a text box or callout: edit its text
   onDoubleClick(e: MouseEvent): void {
     const s = this.store;
+    if (this.textSelect.active()) {
+      const point = this.pagePoint(e);
+      if (point) void this.textSelect.selectWord(this.pageIndex(), point, 2 / this.zoom() + 1);
+      return;
+    }
     if (s.tool !== 'none' || this.markups.tool()) return;
     const page = this.pagePoint(e);
     if (!page) return;
@@ -1059,7 +1223,7 @@ export class PlanView implements OnDestroy {
     if (!g || !canvas) return;
     const index = this.pageIndex();
     const scale = Math.min(3000 / Math.max(g.width, g.height), 2);
-    const result = await renderRegion(g.page, { x: 0, y: 0, w: g.width, h: g.height }, scale,
+    const result = await renderRegion(g, { x: 0, y: 0, w: g.width, h: g.height }, scale,
       t => this.renderTasks.push(t));
     if (!result || index !== this.pageIndex()) return;
     canvas.width = result.width;
@@ -1092,7 +1256,7 @@ export class PlanView implements OnDestroy {
 
     this.renderTasks.forEach(t => t.cancel());
     this.renderTasks = [];
-    const result = await renderRegion(g.page, region, scale, t => this.renderTasks.push(t));
+    const result = await renderRegion(g, region, scale, t => this.renderTasks.push(t));
     if (!result || index !== this.pageIndex()) return;
     canvas.width = result.width;
     canvas.height = result.height;

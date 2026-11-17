@@ -90,6 +90,18 @@ export class OcrService {
   private embeddedStreams = new WeakMap<PageGeometry, PDFRef>();
 
   constructor() {
+    // A rotated page gets a new geometry: its results follow it, in the new view coordinates
+    this.store.onPageSwap((old, next) => {
+      const move = (r: Rect) => next.rectToView(old.rectToPage(r));
+      if (!this.results().some(r => r.page === old)) return;
+      this.results.update(list => list.map(r => r.page !== old ? r : {
+        ...r, page: next, area: move(r.area),
+        words: r.words.map(w => ({ ...w, view: move(w.view) })),
+        lines: r.lines.map(l => ({ ...l, view: move(l.view) })),
+      }));
+      const stream = this.embeddedStreams.get(old);
+      if (stream) this.embeddedStreams.set(next, stream);
+    });
     // Another document was opened (or it was closed): the old results don't belong to it
     effect(() => {
       const s = this.store.watch();
@@ -355,7 +367,7 @@ export class OcrService {
   private async readTile(worker: TesseractWorker, page: PageGeometry, tile: Rect, inside: Rect, direction: OcrDirection,
                          words: OcrWord[], lines: OcrLine[]): Promise<void> {
     if (tile.w <= 1 || tile.h <= 1) return;
-    const canvas = await renderRegion(page.page, tile, SCALE);
+    const canvas = await renderRegion(page, tile, SCALE);
     if (!canvas) return;
     const image = direction === 0 ? canvas : rotateClockwise(canvas);
     const { data } = await worker.recognize(image, {}, { blocks: true, text: false });

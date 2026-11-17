@@ -19,6 +19,13 @@ export interface SearchHit {
 }
 
 // Text of one page and where each piece is on the page
+export interface TextWord {
+  str: string;
+  rect: Rect;              // page coordinates
+  line: number;            // words of the same line share it
+  order: number;           // reading order
+}
+
 interface PageText {
   text: string;
   spans: { start: number; end: number; str: string; transform: number[]; width: number; height: number }[];
@@ -51,7 +58,8 @@ export class TextSearch {
   readonly checked = signal<ReadonlySet<number>>(new Set());
 
   private cacheOwner: unknown = null;
-  private cache = new Map<number, Promise<PageText>>();
+  // Keyed by the page itself, so moved, inserted or replaced (Slip Sheet) pages read their own text
+  private cache = new WeakMap<object, Promise<PageText>>();
   private run = 0;
   private nextId = 0;
 
@@ -62,7 +70,7 @@ export class TextSearch {
       untracked(() => {
         if (renderer !== this.cacheOwner) {
           this.cacheOwner = renderer;
-          this.cache.clear();
+          this.cache = new WeakMap();
           this.clear();
         }
       });
@@ -299,12 +307,35 @@ export class TextSearch {
       .map(span => ({ str: span.str.trim(), rect: pieceRect(span, 0, 1) }));
   }
 
+  // Words of a page in reading order with their box (page coordinates) and their line number,
+  // for the Select Text tool
+  async pageTextWords(pageIndex: number): Promise<TextWord[]> {
+    const text = await this.pageText(pageIndex);
+    const words: TextWord[] = [];
+    let line = 0;
+    let previousEnd = 0;
+    for (const span of text.spans) {
+      // A line break between the last piece and this one starts a new line
+      if (words.length && text.text.slice(previousEnd, span.start).includes('\n')) line++;
+      previousEnd = span.end;
+      const length = span.str.length || 1;
+      for (const match of span.str.matchAll(/\S+/g)) {
+        const from = (match.index ?? 0) / length;
+        const to = ((match.index ?? 0) + match[0].length) / length;
+        words.push({ str: match[0], rect: pieceRect(span, from, to), line, order: words.length });
+      }
+    }
+    return words;
+  }
+
   // Text of a page in reading order, with a space or a line break where pieces don't touch
   private pageText(pageIndex: number): Promise<PageText> {
-    let pending = this.cache.get(pageIndex);
+    const key = this.store.pages[pageIndex];
+    if (!key) return Promise.resolve({ text: '', spans: [] });
+    let pending = this.cache.get(key);
     if (!pending) {
       pending = this.readPage(pageIndex);
-      this.cache.set(pageIndex, pending);
+      this.cache.set(key, pending);
     }
     return pending;
   }

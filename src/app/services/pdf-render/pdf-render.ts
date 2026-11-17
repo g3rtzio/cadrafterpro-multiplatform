@@ -23,10 +23,13 @@ export async function openRenderer(bytes: Uint8Array): Promise<PDFDocumentProxy>
 export class PageGeometry {
   readonly width: number;                  // view size at 100 %
   readonly height: number;
+  readonly rotation: number;               // page rotation in degrees (0, 90, 180, 270)
   private readonly viewport: PageViewport;
 
-  constructor(readonly page: PDFPageProxy) {
-    this.viewport = page.getViewport({ scale: 1 });
+  // rotation: when the page was rotated in the app (the PDF page of pdf.js keeps the old one)
+  constructor(readonly page: PDFPageProxy, rotation: number = page.rotate) {
+    this.rotation = ((Math.round(rotation / 90) * 90) % 360 + 360) % 360;
+    this.viewport = page.getViewport({ scale: 1, rotation: this.rotation });
     this.width = this.viewport.width;
     this.height = this.viewport.height;
   }
@@ -61,8 +64,11 @@ export class PageGeometry {
 
 // Renders part of a page (`region`, in view coordinates) at `scale` device pixels per view unit.
 // Returns the canvas when it finished, or null if it was cancelled.
-export async function renderRegion(page: PDFPageProxy, region: Rect, scale: number,
+// `source`: the page (with the rotation it has in the app) or a pdf.js page as it is in the file
+export async function renderRegion(source: PageGeometry | PDFPageProxy, region: Rect, scale: number,
                                    onTask?: (task: RenderTask) => void): Promise<HTMLCanvasElement | null> {
+  const page = source instanceof PageGeometry ? source.page : source;
+  const rotation = source instanceof PageGeometry ? source.rotation : source.rotate;
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.floor(region.w * scale));
   canvas.height = Math.max(1, Math.floor(region.h * scale));
@@ -73,7 +79,7 @@ export async function renderRegion(page: PDFPageProxy, region: Rect, scale: numb
   const task = page.render({
     canvas,
     canvasContext: ctx,
-    viewport: page.getViewport({ scale }),
+    viewport: page.getViewport({ scale, rotation }),
     transform: [1, 0, 0, 1, -region.x * scale, -region.y * scale],
     annotationMode: pdfjs.AnnotationMode.DISABLE,
   });

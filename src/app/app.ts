@@ -16,13 +16,21 @@ import { DrawingStore } from './services/drawing.store/drawing.store';
 import { OcrPanel } from './components/ocr-panel/ocr-panel';
 import { OcrService } from './services/ocr/ocr';
 import { Icon } from './components/icon/icon';
+import { Resizable } from './components/resizable/resizable';
+import { SlipSheetDialog } from './components/slip-sheet-dialog/slip-sheet-dialog';
+import { SlipSheet } from './services/slip-sheet/slip-sheet';
+import { PageLabeler } from './services/page-labels/page-labels';
+import { InsertPagesDialog } from './components/insert-pages-dialog/insert-pages-dialog';
+import { PageLabelsDialog } from './components/page-labels-dialog/page-labels-dialog';
+import { RotatePagesDialog } from './components/rotate-pages-dialog/rotate-pages-dialog';
+import { PitchDialog } from './components/pitch-dialog/pitch-dialog';
 
 // Main window — port of ContentView.swift:
 // left the element tree or the page thumbnails, ribbon on top, the plan (one or two panes)
 // in the middle, the status bar at the bottom and the properties panel on the right
 @Component({
   selector: 'app-root',
-  imports: [Icon, OcrPanel, ColumnsDialog, FilterBuilder, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
+  imports: [Icon, Resizable, SlipSheetDialog, InsertPagesDialog, PageLabelsDialog, RotatePagesDialog, PitchDialog, OcrPanel, ColumnsDialog, FilterBuilder, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'app',
@@ -36,7 +44,7 @@ import { Icon } from './components/icon/icon';
     @if (showSidebar() && s.ribbonTab === 'Estimating') {
       <aside class="sidebar layouts-sidebar"><app-layouts-panel /></aside>
     } @else if (showSidebar()) {
-      <aside class="sidebar">
+      <aside class="sidebar" appResizable="right" resizeKey="sidebar" [minWidth]="200" [maxWidth]="600">
         <div class="segmented sidebar-picker">
           <button [class.active]="sidebarMode() === 'elements'" (click)="sidebarMode.set('elements')">Elements</button>
           <button [class.active]="sidebarMode() === 'pages'" (click)="sidebarMode.set('pages')">Pages</button>
@@ -121,6 +129,16 @@ import { Icon } from './components/icon/icon';
     @if (s.filterOpen) {
       <app-filter-builder />
     }
+    @if (slipSheet.request()) {
+      <app-slip-sheet-dialog />
+    }
+    <!-- Page windows (open from the Page tab or the Pages panel) -->
+    @if (labeler.dialogOpen() && !labeler.selecting()) { <app-page-labels-dialog /> }
+    @for (request of s.insertRequest ? [s.insertRequest] : []; track request.id) {
+      <app-insert-pages-dialog />
+    }
+    @if (s.batchRotateOpen) { <app-rotate-pages-dialog /> }
+    @if (s.pitchOpen) { <app-pitch-dialog /> }
     @if (s.columnsOpen) {
       <app-columns-dialog />
     }
@@ -129,6 +147,8 @@ import { Icon } from './components/icon/icon';
 export class App {
   readonly store = inject(DrawingStore);
   readonly ocr = inject(OcrService);
+  readonly slipSheet = inject(SlipSheet);
+  readonly labeler = inject(PageLabeler);
   readonly showSidebar = signal(true);
   readonly showInspector = signal(true);
   readonly sidebarMode = signal<'elements' | 'pages'>('elements');

@@ -203,6 +203,15 @@ app-ribbon.ribbon {
 .ribbon-split .ribbon-button { flex: 1; }
 .ribbon-arrow { border: none; background: transparent; padding: 0; height: 14px; line-height: 1; }
 
+/* Ribbon that doesn't fit (the Ribbon component adds these classes as the window gets narrower) */
+app-ribbon.ribbon-compact .ribbon-group { padding: 0 3px; }
+app-ribbon.ribbon-compact .ribbon-button { width: 52px; font-size: 10.5px; }
+app-ribbon.ribbon-compact .ribbon-button span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50px; }
+app-ribbon.ribbon-icons .ribbon-button { width: 36px; }
+app-ribbon.ribbon-icons .ribbon-button span { display: none; }
+app-ribbon.ribbon-icons .ribbon-button .icon { font-size: 24px; }
+app-ribbon.ribbon-scroll .ribbon-tools { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+
 /* MARK: - Menus */
 .menu-anchor { position: relative; }
 .menu {
@@ -546,9 +555,10 @@ app-templates-view.templates-view {
   background: var(--bg);
 }
 app-templates-view.templates-view:focus { outline: none; }
+.templates-tree-pane { width: 300px; flex: none; display: flex; min-height: 0; }
 .templates-tree {
-  width: 300px;
-  flex: none;
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: 0 6px 12px;
   background: var(--bar);
@@ -577,3 +587,32 @@ app-templates-view.templates-view:focus { outline: none; }
 .filter-bar { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 12px; background: var(--accent-soft);
   border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .filter-bar .filter-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Panels with a draggable edge (Resizable directive) */
+.resize-handle { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 6; cursor: col-resize; touch-action: none; }
+.resize-handle.right { right: -4px; }
+.resize-handle.left { left: -4px; }
+.resize-handle::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; transition: background 0.15s; }
+.resize-handle:hover::after, body.resizing-panel .resize-handle::after { background: var(--accent); width: 2px; }
+body.resizing-panel { cursor: col-resize; user-select: none; }
+body.resizing-panel iframe, body.resizing-panel canvas { pointer-events: none; }
+
+/* Slip Sheet dialog */
+.slip-dialog .props-scroll { max-height: 50vh; }
+.slip-actions { display: flex; align-items: center; gap: 6px; }
+.slip-table select { width: 100%; }
+.slip-table tr.unmatched td { color: var(--secondary, #888); }
+.check-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+
+/* Pitch window */
+.pitch-dialog { width: 520px; }
+.pitch-row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.pitch-input { display: flex; align-items: center; gap: 6px; }
+.pitch-presets { display: flex; gap: 4px; flex-wrap: wrap; padding-bottom: 2px; }
+.pitch-presets button { padding: 2px 8px; font-size: 12px; }
+.pitch-presets button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pitch-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+.pitch-box legend { padding: 0 4px; color: var(--secondary); }
+.pitch-box label { display: flex; align-items: center; gap: 4px; }
+.pitch-list { max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+.pitch-list .pitch-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

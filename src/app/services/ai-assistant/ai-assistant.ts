@@ -264,7 +264,7 @@ export class AiAssistant {
         const x1 = Math.min(g.width, (col + 1) * tw + overlap * g.width), y1 = Math.min(g.height, (row + 1) * th + overlap * g.height);
         const region = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
         const scale = Math.min(MAX_EDGE / Math.max(region.w, region.h), MAX_DPI / 72);
-        const canvas = await renderRegion(g.page, region, scale);
+        const canvas = await renderRegion(g, region, scale);
         if (!canvas) throw new Error('The page could not be drawn.');
         const jpeg = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
         tiles.push({ region, scale, width: canvas.width, height: canvas.height, jpeg });

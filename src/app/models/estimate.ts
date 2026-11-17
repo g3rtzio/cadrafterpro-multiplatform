@@ -5,6 +5,7 @@
 //   [Parts:Name] → sum of the property "Name" of the parts right below (each one already
 //                  includes its own parts), e.g. "[Qty] * [Price Each] + [Parts:Price Total]"
 //   + - * / ( ) and numbers. Anything else is plain text.
+//   sqrt( ) abs( ) round( ) ceil( ) floor( ) min( , ) max( , ) pow( , ) → functions
 //   js: …   → JavaScript code (see formula-script.ts)
 // The result is in the input units and is shown converted to the output units (see units.ts).
 
@@ -55,7 +56,7 @@ export interface EstimateData {
   columns: ColumnDef[];
 }
 
-export const PROPERTY_GROUPS = ['Item', 'Estimating', 'Takeoff Data', 'Work Breakdown Structure'];
+export const PROPERTY_GROUPS = ['Item', 'Estimating', 'Takeoff Data', 'Slope', 'Work Breakdown Structure'];
 export const TAKEOFF_PROPS = ['Area', 'Linear Total', 'Segment Count', 'Point Count', 'Section Count'];
 
 // Measured values of an element (from the plan)
@@ -115,6 +116,26 @@ function volumeProps(kind: ElementKind): PropertyDef[] {
   ];
 }
 
+// Roof slope (Pitch): the rise in inches per 12 of run. The slope factor turns what was measured on
+// the plan (a flat projection) into the real sloped area or length. A hip or valley runs on the
+// diagonal (16.97 of run per 12 of the common rafter), so its factor is smaller.
+export const SLOPE_FACTOR_FORMULAS = {
+  plane: 'sqrt(1 + ([Pitch] / 12) * ([Pitch] / 12))',
+  hip: 'sqrt(1 + ([Pitch] * [Pitch]) / 288)',
+};
+
+function slopeProps(kind: ElementKind): PropertyDef[] {
+  if (kind === 'count') return [];
+  const g = 'Slope';
+  return [
+    prop('Pitch', g, '0', { units: 'in/12' }),
+    prop('Slope Factor', g, SLOPE_FACTOR_FORMULAS.plane, { decimals: 4 }),
+    kind === 'area'
+      ? prop('Sloped Area', g, '[Area] * [Slope Factor]', { units: 'SF' })
+      : prop('Sloped Length', g, '[Linear Total] * [Slope Factor]', { units: 'LF' }),
+  ];
+}
+
 function wbsProps(): PropertyDef[] {
   const g = 'Work Breakdown Structure';
   return [text('Division', g), text('SubDivision', g), text('Phase', g), text('Cost Code', g)];
@@ -135,6 +156,7 @@ export function elementTemplate(kind: ElementKind, name: string, markupType?: st
     prop('Point Count', t, '', { decimals: 0, takeoff: true }),
     prop('Section Count', t, '', { units: 'EA', decimals: 0, takeoff: true }),
     ...volumeProps(kind),
+    ...slopeProps(kind),
     ...wbsProps(),
   ];
 }
@@ -167,6 +189,11 @@ export function upgradeProps(props: PropertyDef[], kind: ElementKind | null): Pr
     const add = fresh.filter(p => !findProp(props, p.name));
     const after = props.findIndex(p => p.name === 'Section Count');
     props.splice(after >= 0 ? after + 1 : props.length, 0, ...add);
+  }
+  // Slope (Pitch) for areas and lines saved before it existed
+  if (kind && kind !== 'count' && !findProp(props, 'Pitch')) {
+    const at = props.findIndex(p => p.group === 'Work Breakdown Structure');
+    props.splice(at >= 0 ? at : props.length, 0, ...slopeProps(kind).filter(p => !findProp(props, p.name)));
   }
   return props;
 }
@@ -306,15 +333,32 @@ function nodeId(node: EvalNode): number {
   return id;
 }
 
-type Token = { type: 'num'; value: number } | { type: 'ref'; name: string } | { type: 'op'; op: string };
+type Token = { type: 'num'; value: number } | { type: 'ref'; name: string } | { type: 'op'; op: string }
+  | { type: 'fn'; name: string };
+
+const FUNCTIONS: Record<string, (...args: number[]) => number> = {
+  sqrt: x => Math.sqrt(Math.max(0, x)), abs: Math.abs, round: (x, d = 0) => Math.round(x * 10 ** d) / 10 ** d,
+  ceil: Math.ceil, floor: Math.floor, min: Math.min, max: Math.max, pow: Math.pow,
+};
 
 // null = not a formula (plain text such as "Part")
 function tokenize(text: string): Token[] | null {
   const tokens: Token[] = [];
+  const parens: boolean[] = [];             // open parentheses: true = arguments of a function
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
     if (/\s/.test(ch)) { i++; continue; }
+    const word = /^[a-z]+(?=\s*\()/i.exec(text.slice(i));
+    if (word && FUNCTIONS[word[0].toLowerCase()]) {
+      tokens.push({ type: 'fn', name: word[0].toLowerCase() });
+      i += word[0].length;
+      while (text[i] !== '(') i++;
+      tokens.push({ type: 'op', op: '(' });
+      parens.push(true);
+      i++;
+      continue;
+    }
     if (ch === '[') {
       const end = text.indexOf(']', i);
       if (end < 0) return null;
@@ -326,10 +370,14 @@ function tokenize(text: string): Token[] | null {
       tokens.push({ type: 'num', value: Number(match[0]) });
       i += match[0].length;
     } else if ('+-*/()'.includes(ch)) {
+      if (ch === '(') parens.push(false);
+      if (ch === ')') parens.pop();
       tokens.push({ type: 'op', op: ch });
       i++;
     } else if (ch === ',') {
-      i++;                                   // thousands separator in "1,250"
+      // Between the arguments of a function; elsewhere a thousands separator in "1,250"
+      if (parens[parens.length - 1]) tokens.push({ type: 'op', op: ',' });
+      i++;
     } else {
       return null;
     }
@@ -381,6 +429,18 @@ class Parser {
     if (!t) throw new Error('Invalid formula');
     if (t.type === 'num') return t.value;
     if (t.type === 'ref') return this.lookup(t.name);
+    if (t.type === 'fn') {
+      const open = this.tokens[this.i++];
+      if (!open || open.type !== 'op' || open.op !== '(') throw new Error('Invalid formula');
+      const args = [this.sum()];
+      for (let n = this.peek(); n?.type === 'op' && n.op === ','; n = this.peek()) {
+        this.i++;
+        args.push(this.sum());
+      }
+      const close = this.tokens[this.i++];
+      if (!close || close.type !== 'op' || close.op !== ')') throw new Error('Missing )');
+      return FUNCTIONS[t.name](...args);
+    }
     if (t.op === '(') {
       const value = this.sum();
       const close = this.tokens[this.i++];

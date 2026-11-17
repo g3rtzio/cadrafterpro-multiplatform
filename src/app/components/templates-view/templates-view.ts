@@ -7,6 +7,7 @@ import { DrawingStore } from '../../services/drawing.store/drawing.store';
 import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { AutoFocus } from '../auto-focus/auto-focus';
 import { PropsGrid } from '../props-grid/props-grid';
+import { Resizable } from '../resizable/resizable';
 import { Icon } from '../icon/icon';
 
 // "Templates" tab (PlanSwift style): the template library on the left (folders, templates and
@@ -19,7 +20,7 @@ import { Icon } from '../icon/icon';
 // The "Cost Database" tab is this same view with [database]="true": a library of priced parts only.
 @Component({
   selector: 'app-templates-view',
-  imports: [Icon, AutoFocus, NgTemplateOutlet, PropsGrid],
+  imports: [Icon, AutoFocus, NgTemplateOutlet, PropsGrid, Resizable],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'templates-view',
@@ -30,6 +31,7 @@ import { Icon } from '../icon/icon';
   template: `
     @let lib = library.watch();
     <!-- Left: the library tree -->
+    <div class="templates-tree-pane" appResizable="right" resizeKey="templatesTree" [minWidth]="180" [maxWidth]="700">
     <section class="templates-tree" (click)="lib.select(null)"
              (dragover)="allowDrop($event, null)" (drop)="drop($event, null)">
       <div class="templates-heading">{{ lib.title }}</div>
@@ -40,6 +42,7 @@ import { Icon } from '../icon/icon';
         </div>
       }
     </section>
+    </div>
 
     <!-- Right: the selected template or part -->
     <section class="templates-detail">

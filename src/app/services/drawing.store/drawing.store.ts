@@ -1,5 +1,5 @@
 import { Injectable, computed, signal } from '@angular/core';
-import { PDFDocument, PDFPage } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFName, PDFPage, degrees as pdfDegrees } from 'pdf-lib';
 import type { PDFRef } from 'pdf-lib';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { Markup, Measurement, PlanElement } from '../../models/elements';
@@ -14,7 +14,7 @@ import { PageGeometry, SnapIndex, openRenderer } from '../pdf-render/pdf-render'
 import { Cell, xlsxBlob } from '../xlsx/xlsx';
 import {
   ColumnDef, ElementKind, EstimateData, EstimateGroup, EvalNode, EvalResult, Part, PropertyDef, TAKEOFF_PROPS,
-  TakeoffValues, defaultColumns, elementTemplate, emptyEstimate, evaluate, findProp, formatResult, partTemplate, upgradeProps,
+  SLOPE_FACTOR_FORMULAS, TakeoffValues, defaultColumns, elementTemplate, emptyEstimate, evaluate, findProp, formatResult, partTemplate, upgradeProps,
 } from '../../models/estimate';
 
 // Port of DrawingViewModel.swift: the whole state of the app.
@@ -22,7 +22,7 @@ import {
 // so they redraw (the same idea as the `_ = revision` reads on the Mac).
 
 export type SplitMode = 'single' | 'vertical' | 'horizontal';
-export type RibbonTab = 'Home' | 'Estimating' | 'Templates' | 'Cost Database';
+export type RibbonTab = 'Home' | 'Page' | 'Estimating' | 'Templates' | 'Cost Database';
 export type InteractionMode = 'pan' | 'select' | 'zoom';
 export type Tool = 'none' | 'count' | 'length' | 'area';
 
@@ -117,8 +117,10 @@ export interface InsertRequest {
 }
 
 // One page of the document after adding, deleting or moving pages
+// An existing page (old index), an existing page whose drawing is replaced (Slip Sheet: same
+// index, so everything on it stays), or a new page
 type PageSlot =
-  | { old: number }
+  | { old: number; page?: PDFPage; geometry?: PageGeometry }
   | { page: PDFPage; geometry: PageGeometry; label: string };
 
 // Live points of the measurement in progress (for the live layer)
@@ -455,7 +457,7 @@ export class DrawingStore {
   // MARK: - Tabs and messages
   showTab(tab: RibbonTab): void {
     // The estimate and the templates cover the plan: stop measuring and clear the selection first
-    if (tab !== 'Home') {
+    if (tab !== 'Home' && tab !== 'Page') {
       this.select(null);
       this.selectElements([]);
     }
@@ -1554,6 +1556,116 @@ export class DrawingStore {
     }
   }
 
+  // MARK: - Rotate and sort pages (Page tab)
+  // Services that keep something per page object (OCR) follow a page that gets a new geometry
+  private readonly pageSwapListeners: ((old: PageGeometry, next: PageGeometry) => void)[] = [];
+  onPageSwap(listener: (old: PageGeometry, next: PageGeometry) => void): void {
+    this.pageSwapListeners.push(listener);
+  }
+
+  // Turns pages by `degrees` (90 = right, -90 = left, 180). Markups and measurements stay on
+  // the drawing: they are kept in page coordinates, only the view turns.
+  rotatePages(indexes: number[], degrees: number): void {
+    const lib = this.lib;
+    const list = [...new Set(indexes)].filter(i => i >= 0 && i < this.pageCount);
+    if (!lib || list.length === 0 || degrees % 360 === 0) return;
+    this.finishCurrentMeasurement();
+    for (const i of list) {
+      const old = this.pages[i];
+      const next = new PageGeometry(old.page, old.rotation + degrees);
+      lib.getPage(i).setRotation(pdfDegrees(next.rotation));
+      this.pages[i] = next;
+      this.pageSwapListeners.forEach(listener => listener(old, next));
+    }
+    this.pages = [...this.pages];
+    this.pagesChanged = true;
+    const turn = degrees === 180 || degrees === -180 ? '180°' : degrees > 0 ? 'right' : 'left';
+    this.showToast(list.length === 1 ? `${this.pageName(list[0])} rotated ${turn}` : `${list.length} pages rotated ${turn}`);
+    this.touch();
+  }
+
+  batchRotateOpen = false;                         // Batch Rotate Pages window on screen
+  openBatchRotate(): void { if (this.hasDocument) { this.batchRotateOpen = true; this.touch(); } }
+  closeBatchRotate(): void { this.batchRotateOpen = false; this.touch(); }
+
+  // Orders the pages by name, numbers in names counted as numbers ("A-2" before "A-10")
+  sortPagesByName(): void {
+    const names = this.pages.map((_, i) => this.pageName(i));
+    const order = names.map((_, i) => i)
+      .sort((a, b) => names[a].localeCompare(names[b], undefined, { numeric: true, sensitivity: 'base' }));
+    if (order.every((old, i) => old === i)) {
+      this.showToast('The pages are already in order');
+      return;
+    }
+    this.rebuildPages(order.map(old => ({ old })));
+    this.showToast('Pages sorted by name');
+  }
+
+  // MARK: - Slip Sheet
+  // Replaces the drawing of pages with pages of another PDF (an addendum or a new revision), keeping
+  // everything that was on them: markups, measurements, highlights, scales and page names.
+  // pairs: page of this document ← page of the other file (0-based). append: pages of the other
+  // file added at the end (new sheets), with their name. Page changes can't be undone (like the
+  // Pages panel). Returns how many pages were replaced.
+  async slipSheet(bytes: Uint8Array, renderer: PDFDocumentProxy, fileName: string,
+                  pairs: { target: number; source: number }[], append: { source: number; label: string }[]): Promise<number> {
+    const lib = this.lib;
+    if (!lib || (pairs.length === 0 && append.length === 0)) return 0;
+    try {
+      this.finishCurrentMeasurement();
+      const source = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+      const sources = [...pairs.map(p => p.source), ...append.map(a => a.source)];
+      const copies = await lib.copyPages(source, sources);
+      const geometries = await Promise.all(sources.map(i => renderer.getPage(i + 1).then(p => new PageGeometry(p))));
+      this.extraRenderers.push(renderer);
+
+      const slots: PageSlot[] = this.pages.map((_, i) => ({ old: i }));
+      // Markups that came with the new pages, read before the old annotations move over
+      const incoming: { index: number; data: ReturnType<typeof readPage> }[] = [];
+      let resized = 0;
+      pairs.forEach((pair, k) => {
+        const page = copies[k];
+        const old = lib.getPage(pair.target);
+        incoming.push({ index: pair.target, data: readPage(page, pair.target) });
+        // The annotations of the old page (markups, measurements saved before, highlights) go onto
+        // the new one, so the saved file keeps them and Undo / Delete still find them
+        const annots = old.node.Annots();
+        for (let i = 0; i < (annots?.size() ?? 0); i++) {
+          const ref = annots!.get(i);
+          const dict = annots!.lookupMaybe(i, PDFDict);
+          if (dict) dict.set(PDFName.of('P'), page.ref);
+          page.node.addAnnot(ref as PDFRef);
+        }
+        const before = this.pages[pair.target];
+        if (before && (Math.abs(before.width - geometries[k].width) > 1 || Math.abs(before.height - geometries[k].height) > 1)) resized++;
+        slots[pair.target] = { old: pair.target, page, geometry: geometries[k] };
+      });
+      append.forEach((a, k) => {
+        const page = copies[pairs.length + k];
+        incoming.push({ index: slots.length, data: readPage(page, slots.length) });
+        slots.push({ page, geometry: geometries[pairs.length + k], label: a.label });
+      });
+      this.rebuildPages(slots);
+      for (const { index, data } of incoming) {
+        this.markups.push(...data.markups);
+        if (data.scale !== null && !this.pageScales.has(index)) this.pageScales.set(index, data.scale);
+        if (!this.viewports.some(v => v.pageIndex === index)) this.viewports.push(...data.viewports);
+        this.snapIndexes.delete(index);
+      }
+      this.pagesChanged = true;
+      const parts = [`${pairs.length} page${pairs.length === 1 ? '' : 's'} replaced from ${fileName}`];
+      if (append.length) parts.push(`${append.length} new page${append.length === 1 ? '' : 's'} added at the end`);
+      if (resized) parts.push(`${resized} with a different size: check the markups`);
+      this.showToast(parts.join(', '), resized > 0);
+      this.touch();
+      return pairs.length;
+    } catch (error) {
+      console.error(error);
+      this.showToast(`Couldn't use the pages of ${fileName}`, true);
+      return 0;
+    }
+  }
+
   // Deletes pages and everything measured on them (a document keeps at least one page)
   deletePages(indexes: number[]): void {
     const gone = new Set(indexes.filter(i => i >= 0 && i < this.pageCount));
@@ -1590,14 +1702,14 @@ export class DrawingStore {
 
     // pdf-lib: take every page out, then put them back in the new order
     for (let i = lib.getPageCount() - 1; i >= 0; i--) lib.removePage(i);
-    slots.forEach((slot, i) => lib.insertPage(i, 'old' in slot ? oldPages[slot.old] : slot.page));
+    slots.forEach((slot, i) => lib.insertPage(i, 'old' in slot ? slot.page ?? oldPages[slot.old] : slot.page));
 
     // Old index → new index (-1 = deleted)
     const newIndex = new Array<number>(oldGeometry.length).fill(-1);
     slots.forEach((slot, i) => { if ('old' in slot) newIndex[slot.old] = i; });
     const map = (i: number) => newIndex[i] ?? -1;
 
-    this.pages = slots.map(slot => 'old' in slot ? oldGeometry[slot.old] : slot.geometry);
+    this.pages = slots.map(slot => 'old' in slot ? slot.geometry ?? oldGeometry[slot.old] : slot.geometry);
     this.pageLabels = slots.map(slot => 'old' in slot ? (numbered ? '' : oldLabels[slot.old] ?? '') : slot.label);
     this.remapPageIndexes(map);
     this.pagesChanged = true;
@@ -1910,6 +2022,72 @@ export class DrawingStore {
       return { props: props ?? part.props, takeoff: null, parent, children };
     }
     return { props: props ?? this.rowProps(key), takeoff: this.elementInfo(key)?.takeoff ?? null, parent: null, children };
+  }
+
+  // MARK: - Slope (Pitch)
+  pitchOpen = false;                               // Pitch window on screen
+  pitchSeed: number | null = null;                 // pitch measured on the plan, offered in the window
+
+  openPitch(seed: number | null = null): void {
+    if (!this.hasDocument) return;
+    this.pitchSeed = seed;
+    this.pitchOpen = true;
+    this.touch();
+  }
+
+  closePitch(): void {
+    this.pitchOpen = false;
+    this.touch();
+  }
+
+  // Areas and lines of the estimate (what a pitch applies to)
+  slopeElements(): { name: string; kind: ElementKind; pitch: number; hip: boolean; sloped: boolean }[] {
+    return this.elementNames()
+      .map(name => ({ name, info: this.elementInfo(name) }))
+      .filter(e => e.info && e.info.kind !== 'count')
+      .map(({ name, info }) => {
+        const props = this.rowProps(name);
+        const pitch = Number(evaluate({ props, takeoff: null, parent: null }, 'Pitch').value) || 0;
+        const factor = findProp(props, 'Slope Factor')?.formula.replace(/\s+/g, '') ?? '';
+        const qty = findProp(props, 'Qty')?.formula ?? '';
+        return { name, kind: info!.kind, pitch, hip: factor === SLOPE_FACTOR_FORMULAS.hip.replace(/\s+/g, ''), sloped: /\[Sloped /.test(qty) };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // The items picked by default: selected on the plan, in the tree or in the estimate
+  slopeTargets(): string[] {
+    const names = new Set<string>();
+    for (const el of this.selection) if (el.name) names.add(el.name);
+    if (this.selectedItem) names.add(this.selectedItem.name);
+    for (const key of this.estimateSelection) names.add(key);
+    const allowed = new Set(this.slopeElements().map(e => e.name));
+    return [...names].filter(n => allowed.has(n));
+  }
+
+  // Pitch window Ok: rise per 12 of run, roof plane or hip / valley, and whether Qty takes the
+  // sloped value (one Undo step)
+  applyPitch(names: string[], pitch: number, hip: boolean, useForQty: boolean): void {
+    if (names.length === 0) return;
+    this.checkpoint();
+    for (const name of names) {
+      const kind = this.elementInfo(name)?.kind;
+      if (!kind || kind === 'count') continue;
+      const props = structuredClone(this.rowProps(name));
+      upgradeProps(props, kind);
+      const set = (prop: string, formula: string) => { const def = findProp(props, prop); if (def) def.formula = formula; };
+      set('Pitch', String(Math.round(pitch * 1000) / 1000));
+      set('Slope Factor', hip ? SLOPE_FACTOR_FORMULAS.hip : SLOPE_FACTOR_FORMULAS.plane);
+      const measured = kind === 'area' ? '[Area]' : '[Linear Total]';
+      const sloped = kind === 'area' ? '[Sloped Area]' : '[Sloped Length]';
+      const qty = findProp(props, 'Qty');
+      if (qty && useForQty && qty.formula.trim() === measured) qty.formula = sloped;
+      if (qty && !useForQty && qty.formula.trim() === sloped) qty.formula = measured;
+      this.estimate.elementProps[name] = props;
+    }
+    this.pitchOpen = false;
+    this.estimateChanged();
+    this.showToast(`Pitch ${pitch}/12 applied to ${names.length === 1 ? names[0] : names.length + ' items'}`);
   }
 
   // Value of one property of a row ("1,250.00", units "SF")

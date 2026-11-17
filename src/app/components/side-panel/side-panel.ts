@@ -5,6 +5,7 @@ import { ScalePanel } from '../scale-panel/scale-panel';
 import { SearchPanel } from '../search-panel/search-panel';
 import { TemplatesPanel } from '../templates-panel/templates-panel';
 import { Icon } from '../icon/icon';
+import { Resizable } from '../resizable/resizable';
 
 export type SidePanelTab = 'settings' | 'search' | 'scale' | 'templates' | 'costdb' | 'ai';
 
@@ -13,12 +14,12 @@ export type SidePanelTab = 'settings' | 'search' | 'scale' | 'templates' | 'cost
 // ⌘F / Ctrl+F opens Search.
 @Component({
   selector: 'app-side-panel',
-  imports: [Icon, AiPanel, PropertiesPanel, ScalePanel, SearchPanel, TemplatesPanel],
+  imports: [Icon, Resizable, AiPanel, PropertiesPanel, ScalePanel, SearchPanel, TemplatesPanel],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'side-panel', '(document:keydown)': 'onKey($event)' },
   template: `
     @if (open()) {
-      <aside class="side-panel-body">
+      <aside class="side-panel-body" appResizable="left" resizeKey="sidePanel" [minWidth]="240" [maxWidth]="720">
         <header class="side-panel-title">{{ titles[tab()] }}</header>
         <div class="side-panel-content">
           @switch (tab()) {

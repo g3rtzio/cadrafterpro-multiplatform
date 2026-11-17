@@ -14,7 +14,7 @@ export async function captureSnapshot(store: DrawingStore, pageIndex: number, g:
                                       region: Rect): Promise<SnapshotClip | null> {
   let scale = SNAPSHOT_DPI / 72;
   if (region.w * region.h * scale * scale > MAX_PIXELS) scale = Math.sqrt(MAX_PIXELS / (region.w * region.h));
-  const canvas = await renderRegion(g.page, region, scale);
+  const canvas = await renderRegion(g, region, scale);
   if (!canvas) return null;
 
   // Markups and measurements of that page, drawn on top of the picture
@@ -45,7 +45,7 @@ export async function captureOverlay(o: OverlayState, base: PageGeometry, top: P
   if (base.width * base.height * k * k > OVERLAY_MAX_PIXELS) k = Math.sqrt(OVERLAY_MAX_PIXELS / (base.width * base.height));
   // The page on top, sharp enough for its scale on the base page
   const sourceScale = Math.min(k * Math.max(o.scale, 0.1), 6);
-  const source = await renderRegion(top.page, { x: 0, y: 0, w: top.width, h: top.height }, sourceScale);
+  const source = await renderRegion(top, { x: 0, y: 0, w: top.width, h: top.height }, sourceScale);
   if (!source) return null;
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(base.width * k));
