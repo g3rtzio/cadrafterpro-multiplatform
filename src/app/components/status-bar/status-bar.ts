@@ -1,88 +1,53 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { SCALE_GROUPS } from '../../models/takeoff';
-import { DrawingStore, InteractionMode, SplitMode } from '../../services/drawing.store';
+import { DrawingStore, InteractionMode, SplitMode } from '../../services/drawing.store/drawing.store';
+import { Icon } from '../icon/icon';
 
 // Revu-style bottom bar: view, tools, pages, history, sheet size and scale — port of StatusBarView.swift
 @Component({
   selector: 'app-status-bar',
+  imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'status-bar', '(document:click)': 'scaleMenuOpen.set(false)' },
   template: `
     @let s = store.watch();
     <!-- Split view -->
     @for (b of splitButtons; track b.mode) {
-      <button
-        class="icon-button"
-        [title]="b.title"
-        [class.active]="s.splitMode === b.mode"
-        (click)="s.setSplit(b.mode)"
-      >
-        <span class="icon">{{ b.icon }}</span>
+      <button class="icon-button" [title]="b.title" [class.active]="s.splitMode === b.mode" (click)="s.setSplit(b.mode)">
+        <app-icon class="icon" [name]="b.icon" />
       </button>
     }
     <span class="separator"></span>
-    <button class="icon-button" title="Fit Page" (click)="s.fitPage()">
-      <span class="icon">fit_screen</span>
-    </button>
-    <button class="icon-button" title="Fit Width" (click)="s.fitWidth()">
-      <span class="icon">width</span>
-    </button>
+    <button class="icon-button" title="Fit Page" (click)="s.fitPage()"><app-icon class="icon" name="fit_screen" /></button>
+    <button class="icon-button" title="Fit Width" (click)="s.fitWidth()"><app-icon class="icon" name="width" /></button>
 
     <span class="spacer"></span>
 
     <!-- Tools -->
     @for (b of toolButtons; track b.mode) {
-      <button
-        class="icon-button"
-        [title]="b.title"
-        [class.active]="s.tool === 'none' && s.interaction === b.mode"
-        (click)="s.setInteraction(b.mode)"
-      >
-        <span class="icon">{{ b.icon }}</span>
+      <button class="icon-button" [title]="b.title" [class.active]="s.tool === 'none' && s.interaction === b.mode"
+              (click)="s.setInteraction(b.mode)">
+        <app-icon class="icon" [name]="b.icon" />
       </button>
     }
     <span class="separator"></span>
 
     <!-- Page navigation -->
-    <button class="icon-button" title="First Page" (click)="s.firstPage()">
-      <span class="icon">first_page</span>
-    </button>
-    <button class="icon-button" title="Previous Page" (click)="s.previousPage()">
-      <span class="icon">chevron_left</span>
-    </button>
-    <input
-      class="page-input"
-      [value]="editing() ? draft() : pageText()"
-      (focus)="startEditing(); $any($event.target).select()"
-      (input)="draft.set($any($event.target).value)"
-      (keydown.enter)="submit($event)"
-      (keydown.escape)="$any($event.target).blur()"
-      (blur)="editing.set(false)"
-    />
-    <button class="icon-button" title="Next Page" (click)="s.nextPage()">
-      <span class="icon">chevron_right</span>
-    </button>
-    <button class="icon-button" title="Last Page" (click)="s.lastPage()">
-      <span class="icon">last_page</span>
-    </button>
+    <button class="icon-button" title="First Page" (click)="s.firstPage()"><app-icon class="icon" name="first_page" /></button>
+    <button class="icon-button" title="Previous Page" (click)="s.previousPage()"><app-icon class="icon" name="chevron_left" /></button>
+    <input class="page-input" [value]="editing() ? draft() : pageText()"
+           (focus)="startEditing(); $any($event.target).select()" (input)="draft.set($any($event.target).value)"
+           (keydown.enter)="submit($event)" (keydown.escape)="$any($event.target).blur()" (blur)="editing.set(false)" />
+    <button class="icon-button" title="Next Page" (click)="s.nextPage()"><app-icon class="icon" name="chevron_right" /></button>
+    <button class="icon-button" title="Last Page" (click)="s.lastPage()"><app-icon class="icon" name="last_page" /></button>
     <span class="separator"></span>
 
     <!-- View history -->
-    <button
-      class="icon-button"
-      title="Previous View"
-      [disabled]="!s.canGoBack"
-      (click)="s.goBack()"
-    >
-      <span class="icon">arrow_back</span>
+    <button class="icon-button" title="Previous View" [disabled]="!s.canGoBack" (click)="s.goBack()">
+      <app-icon class="icon" name="arrow_back" />
     </button>
-    <button
-      class="icon-button"
-      title="Next View"
-      [disabled]="!s.canGoForward"
-      (click)="s.goForward()"
-    >
-      <span class="icon">arrow_forward</span>
+    <button class="icon-button" title="Next View" [disabled]="!s.canGoForward" (click)="s.goForward()">
+      <app-icon class="icon" name="arrow_forward" />
     </button>
 
     <span class="spacer"></span>
@@ -90,11 +55,8 @@ import { DrawingStore, InteractionMode, SplitMode } from '../../services/drawing
     <!-- Sheet size and scale -->
     <span class="secondary mono">{{ s.pageSizeText(s.currentPageIndex) }}</span>
     <div class="menu-anchor">
-      <button
-        class="link-button"
-        (click)="$event.stopPropagation(); scaleMenuOpen.set(!scaleMenuOpen())"
-      >
-        {{ s.scaleText }} <span class="icon small">expand_less</span>
+      <button class="link-button" (click)="$event.stopPropagation(); scaleMenuOpen.set(!scaleMenuOpen())">
+        {{ s.scaleText }} <app-icon class="icon small" name="expand_less" />
       </button>
       @if (scaleMenuOpen()) {
         <div class="menu scale-menu up" (click)="$event.stopPropagation()">
@@ -102,15 +64,11 @@ import { DrawingStore, InteractionMode, SplitMode } from '../../services/drawing
           @for (group of scaleGroups; track group.title) {
             <div class="menu-header">{{ group.title }}</div>
             @for (preset of group.presets; track preset.name) {
-              <button class="menu-item" (click)="setScale(preset.denominator)">
-                {{ preset.name }}
-              </button>
+              <button class="menu-item" (click)="setScale(preset.denominator)">{{ preset.name }}</button>
             }
           }
           <div class="menu-divider"></div>
-          <button class="menu-item" (click)="scaleMenuOpen.set(false); s.requestPageScale()">
-            Custom…
-          </button>
+          <button class="menu-item" (click)="scaleMenuOpen.set(false); s.requestPageScale()">Custom…</button>
         </div>
       }
     </div>
@@ -137,9 +95,7 @@ export class StatusBar {
   // "G-002 (4 of 198)"
   readonly pageText = computed(() => {
     const s = this.store.watch();
-    return s.pageCount === 0
-      ? ''
-      : `${s.pageName(s.currentPageIndex)} (${s.currentPageIndex + 1} of ${s.pageCount})`;
+    return s.pageCount === 0 ? '' : `${s.pageName(s.currentPageIndex)} (${s.currentPageIndex + 1} of ${s.pageCount})`;
   });
 
   startEditing(): void {

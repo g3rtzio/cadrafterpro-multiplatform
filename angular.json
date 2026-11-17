@@ -6,7 +6,7 @@
   },
   "newProjectRoot": "projects",
   "projects": {
-    "cadrafterpro": {
+    "cadrafterpro-web": {
       "projectType": "application",
       "schematics": {},
       "root": "",
@@ -19,22 +19,54 @@
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",
             "assets": [
-              { "glob": "**/*", "input": "public" },
+              {
+                "glob": "**/*",
+                "input": "public"
+              },
               {
                 "glob": "pdf.worker.min.mjs",
                 "input": "node_modules/pdfjs-dist/build",
                 "output": "/"
               },
-              { "glob": "**/*", "input": "node_modules/pdfjs-dist/cmaps", "output": "cmaps" },
+              {
+                "glob": "**/*",
+                "input": "node_modules/pdfjs-dist/cmaps",
+                "output": "cmaps"
+              },
               {
                 "glob": "**/*",
                 "input": "node_modules/pdfjs-dist/standard_fonts",
                 "output": "standard_fonts"
               },
-              { "glob": "**/*", "input": "node_modules/pdfjs-dist/wasm", "output": "wasm" }
+              {
+                "glob": "**/*",
+                "input": "node_modules/pdfjs-dist/wasm",
+                "output": "wasm"
+              },
+              {
+                "glob": "worker.min.js",
+                "input": "node_modules/tesseract.js/dist",
+                "output": "ocr"
+              },
+              {
+                "glob": "tesseract-core*lstm.wasm.js",
+                "input": "node_modules/tesseract.js-core",
+                "output": "ocr/core"
+              },
+              {
+                "glob": "eng.traineddata.gz",
+                "input": "node_modules/@tesseract.js-data/eng/4.0.0_best_int",
+                "output": "ocr/lang"
+              }
             ],
-            "styles": ["src/styles.css"],
-            "allowedCommonJsDependencies": ["pako"]
+            "styles": [
+              "src/styles.css"
+            ],
+            "allowedCommonJsDependencies": [
+              "pako",
+              "tesseract.js",
+              "regenerator-runtime/runtime"
+            ]
           },
           "configurations": {
             "production": {
@@ -64,10 +96,10 @@
           "builder": "@angular/build:dev-server",
           "configurations": {
             "production": {
-              "buildTarget": "cadrafterpro:build:production"
+              "buildTarget": "cadrafterpro-web:build:production"
             },
             "development": {
-              "buildTarget": "cadrafterpro:build:development"
+              "buildTarget": "cadrafterpro-web:build:development"
             }
           },
           "defaultConfiguration": "development"
