@@ -1,13 +1,14 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { Measurement } from '../../models/elements';
-import { Pt, Rect, TakeoffItem } from '../../models/takeoff';
+import { COLORS, Pt, Rect, TakeoffItem } from '../../models/takeoff';
 import { DrawingStore } from '../drawing.store/drawing.store';
 import { PageGeometry, renderRegion } from '../pdf-render/pdf-render';
 import { TextSearch } from '../text-search/text-search';
 
 // AI assistant of the right side bar: connects to Claude, ChatGPT or Gemini with the user's own
-// API key, shows the model the sheet (pictures of the page plus the text on it with positions)
-// and the count takeoff items, and puts the counts the model finds straight into the drawing.
+// API key. Once connected it is a chat about the open drawing (the current page can go along as
+// a picture plus its text), and it counts takeoff items: it shows the model the sheet and the
+// count items, and puts the counts the model finds straight into the drawing.
 
 export type AiProvider = 'claude' | 'openai' | 'gemini';
 export type AiDetail = 1 | 2 | 3;            // the page is sent as 1, 2×2 or 3×3 pictures
@@ -59,6 +60,44 @@ export interface AiRunResult {
   skipped: number;                           // already counted at the same spot
   notes: string;
 }
+
+// MARK: - Chat
+// The model can propose a count; the app shows a button that runs it
+export interface ChatCountAction {
+  items: string[];                           // takeoff item names (new names become new count items)
+  pages: 'current' | 'all';
+  instructions: string;
+  pageIndex: number;                         // the current page when it was proposed
+  state: 'ready' | 'running' | 'done';
+}
+
+export interface ChatMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  text: string;                              // what is shown (without the action block)
+  raw: string;                               // what goes back to the model in the history
+  page?: { index: number; name: string };    // page sent along with a user message
+  error?: boolean;
+  streaming?: boolean;
+  action?: ChatCountAction;
+}
+
+// One turn of the conversation as the providers receive it
+interface ChatTurn { role: 'user' | 'assistant'; text: string; images: string[]; }
+
+const ACTION_BLOCK = /```takeoff-count\s*([\s\S]*?)(```|$)/;
+const CHAT_HISTORY = 30;                     // messages sent back to the model
+const CHAT_WORDS = 2500;                     // words of page text sent with a message
+
+const CHAT_PROMPT = `You are the AI assistant of CadrafterPro, a construction takeoff and estimating app (similar to PlanSwift and Bluebeam). You chat with an estimator about the drawing they have open.
+- Answer in the same language the user writes in. Be concise and practical; use short lists when they help.
+- When a page is attached you see a picture of the sheet and the text printed on it. Read dimensions, notes, schedules, scales, room names and tags from them. If something is too small to read, say so.
+- You cannot change the drawing yourself. To count symbols or tags on the drawing and add them to the takeoff, end your answer with exactly one block like this:
+\`\`\`takeoff-count
+{"items":["Duplex Outlet","Door D1"],"pages":"current","instructions":"Duplex Outlet = circle with two parallel lines; Door D1 = the D1 tags"}
+\`\`\`
+  Use the names of the takeoff items listed below when they match; a new name creates a new count item. "pages" is "current" or "all". The app shows the user a button to run the count, so never say the counts were already added.
+- Quantities in the takeoff are in EA (counts), FT (lengths) and SF (areas) with the scale of each page.`;
 
 const SETTINGS_KEY = 'cadrafterpro.ai';
 const MAX_EDGE = 1568;                       // long edge of each picture, in pixels
@@ -131,6 +170,11 @@ export class AiAssistant {
   readonly results = signal<AiRunResult[]>([]);
   private run = 0;
 
+  readonly chat = signal<ChatMessage[]>([]);
+  readonly chatBusy = signal(false);
+  private chatAbort: AbortController | null = null;
+  private nextId = 1;
+
   constructor() {
     this.load();
   }
@@ -178,13 +222,14 @@ export class AiAssistant {
     this.progress.set('');
   }
 
-  // Checks the key and the model without spending tokens (reads the model's information)
-  async testConnection(): Promise<void> {
+  // Checks the key and the model without spending tokens (reads the model's information).
+  // true when it worked.
+  async testConnection(): Promise<boolean> {
     const provider = this.provider(), key = this.apiKey(), model = this.model();
     this.status.set(null);
     if (!key) {
       this.status.set({ ok: false, text: 'Enter an API key first.' });
-      return;
+      return false;
     }
     this.busy.set(true);
     this.progress.set('Connecting…');
@@ -201,12 +246,179 @@ export class AiAssistant {
           { 'x-goog-api-key': key }) as { displayName?: string };
         this.status.set({ ok: true, text: `Connected to ${m.displayName || model}.` });
       }
+      return true;
     } catch (e) {
       this.status.set({ ok: false, text: errorText(e) });
+      return false;
     } finally {
       this.busy.set(false);
       this.progress.set('');
     }
+  }
+
+  // MARK: - Chat
+  // Sends a message (with the current page as a picture plus its text when withPage) and
+  // streams the answer into the conversation
+  async send(text: string, withPage: boolean): Promise<void> {
+    const s = this.store;
+    const question = text.trim();
+    if (!question || this.chatBusy() || this.busy()) return;
+    const pageIndex = s.currentPageIndex;
+    const page = withPage && s.hasDocument && s.pages[pageIndex] ? { index: pageIndex, name: s.pageName(pageIndex) } : undefined;
+    this.chat.update(list => [...list, { id: this.nextId++, role: 'user', text: question, raw: question, page }]);
+    const answerId = this.nextId++;
+    this.chat.update(list => [...list, { id: answerId, role: 'assistant', text: '', raw: '', streaming: true }]);
+    this.chatBusy.set(true);
+    const abort = new AbortController();
+    this.chatAbort = abort;
+    let raw = '';
+    try {
+      if (!this.apiKey()) throw new Error('Connect an AI provider first (API key).');
+      const turns = await this.chatTurns(page?.index);
+      if (abort.signal.aborted) return;
+      const onText = (delta: string) => {
+        raw += delta;
+        this.patch(answerId, { raw, text: visibleText(raw) });
+      };
+      const provider = this.provider(), key = this.apiKey(), model = this.model(), system = this.chatSystem();
+      if (provider === 'claude') await chatClaude(key, model, system, turns, onText, abort.signal);
+      else if (provider === 'openai') await chatOpenAI(key, model, system, turns, onText, abort.signal);
+      else await chatGemini(key, model, system, turns, onText, abort.signal);
+      const action = parseAction(raw, pageIndex);
+      this.patch(answerId, { raw, text: visibleText(raw) || (action ? '' : '(No answer)'), streaming: false, action });
+    } catch (e) {
+      if (abort.signal.aborted) {
+        this.patch(answerId, { raw, text: visibleText(raw) || '(Stopped)', streaming: false });
+      } else {
+        this.patch(answerId, { raw, text: errorText(e), streaming: false, error: true });
+      }
+    } finally {
+      if (this.chatAbort === abort) {
+        this.chatAbort = null;
+        this.chatBusy.set(false);
+      }
+    }
+  }
+
+  stopChat(): void {
+    this.chatAbort?.abort();
+    this.chatAbort = null;
+    this.chatBusy.set(false);
+    this.chat.update(list => list.map(m => m.streaming ? { ...m, streaming: false, text: m.text || '(Stopped)' } : m));
+  }
+
+  newChat(): void {
+    this.stopChat();
+    this.chat.set([]);
+  }
+
+  // Runs a count the model proposed: missing items are created, then the counts are added and
+  // summed up in the conversation
+  async runAction(messageId: number): Promise<void> {
+    const s = this.store;
+    const message = this.chat().find(m => m.id === messageId);
+    const action = message?.action;
+    if (!action || action.state !== 'ready' || this.busy() || !s.hasDocument) return;
+    const palette = [COLORS.red, COLORS.blue, COLORS.green, COLORS.orange, COLORS.purple];
+    const ids: string[] = [];
+    for (const name of action.items) {
+      let item = s.items.find(i => i.kind === 'count' && i.name.trim().toLowerCase() === name.trim().toLowerCase());
+      if (!item) {
+        s.addItem(name.trim(), 'count', palette[s.items.length % palette.length]);
+        item = s.items[s.items.length - 1];
+        s.cancelTool();                   // addItem starts measuring with it; here the AI places the counts
+        s.touch();
+      }
+      if (!ids.includes(item.id)) ids.push(item.id);
+    }
+    const pageIndex = Math.min(action.pageIndex, s.pageCount - 1);
+    const pages = action.pages === 'all' ? Array.from({ length: s.pageCount }, (_, i) => i) : [pageIndex];
+    this.patch(messageId, { action: { ...action, state: 'running' } });
+    await this.countItems(ids, pages, action.instructions, 2, true);
+    this.patch(messageId, { action: { ...action, state: 'done' } });
+    const lines: string[] = [];
+    if (this.error()) {
+      lines.push(`The count didn't finish: ${this.error()}`);
+    } else {
+      for (const r of this.results()) {
+        lines.push(`**${s.pageName(r.pageIndex)}**`);
+        for (const a of r.added) lines.push(`- ${a.name}: ${a.count} EA added`);
+        if (r.skipped) lines.push(`- ${r.skipped} already counted, skipped`);
+        if (r.notes) lines.push(r.notes);
+      }
+      lines.push('', 'Check the counts on the plan; Undo removes them.');
+    }
+    const text = lines.join('\n');
+    this.chat.update(list => [...list, { id: this.nextId++, role: 'assistant', text, raw: text, error: !!this.error() }]);
+  }
+
+  private patch(id: number, change: Partial<ChatMessage>): void {
+    this.chat.update(list => list.map(m => m.id === id ? { ...m, ...change } : m));
+  }
+
+  // The conversation for the model; only the newest message carries its page (picture and text)
+  private async chatTurns(pageIndex: number | undefined): Promise<ChatTurn[]> {
+    const messages = this.chat().filter(m => !m.streaming && !m.error && m.raw).slice(-CHAT_HISTORY);
+    while (messages.length && messages[0].role !== 'user') messages.shift();
+    const turns: ChatTurn[] = messages.map(m => ({
+      role: m.role,
+      text: m.page ? `${m.raw}\n\n[Page attached: ${m.page.name}]` : m.raw,
+      images: [],
+    }));
+    const last = turns[turns.length - 1];
+    const g = pageIndex === undefined ? undefined : this.store.pages[pageIndex];
+    if (last && g && pageIndex !== undefined) {
+      const [tile] = await this.tiles(g, 1);
+      last.images.push(tile.jpeg);
+      const words = (await this.text.pageTextWords(pageIndex)).slice(0, CHAT_WORDS);
+      let text = '';
+      let line = -1;
+      for (const w of words) {
+        if (text) text += w.line === line ? ' ' : '\n';
+        text += w.str;
+        line = w.line;
+      }
+      last.text = `Attached: the sheet "${this.store.pageName(pageIndex)}" (page ${pageIndex + 1} of ${this.store.pageCount}).`
+        + (text ? `\nText printed on the sheet:\n${text}` : '\nThe sheet has no text layer (scanned): read the picture.')
+        + `\n\n${messages[messages.length - 1].raw}`;
+    }
+    // Providers want user and assistant turns to alternate: merge neighbours
+    const merged: ChatTurn[] = [];
+    for (const t of turns) {
+      const prev = merged[merged.length - 1];
+      if (prev && prev.role === t.role) {
+        prev.text += '\n\n' + t.text;
+        prev.images.push(...t.images);
+      } else {
+        merged.push({ ...t, images: [...t.images] });
+      }
+    }
+    return merged;
+  }
+
+  // System prompt plus what the app knows about the open document
+  private chatSystem(): string {
+    const s = this.store;
+    if (!s.hasDocument) return CHAT_PROMPT + '\n\nNo drawing is open.';
+    const lines = [
+      CHAT_PROMPT, '',
+      `Open drawing: ${s.fileName || 'untitled'} (${s.pageCount} page${s.pageCount === 1 ? '' : 's'}).`,
+      `Current page: ${s.pageName(s.currentPageIndex)} (page ${s.currentPageIndex + 1}).`,
+      `Pages: ${Array.from({ length: Math.min(s.pageCount, 200) }, (_, i) => `${i + 1}. ${s.pageName(i)}`).join('; ')}`,
+    ];
+    if (s.items.length) {
+      lines.push('', 'Takeoff items (quantity on the current page / whole drawing):');
+      for (const item of s.items.slice(0, 200)) {
+        const unit = item.kind === 'count' ? 'EA' : item.kind === 'area' ? 'SF' : 'FT';
+        let total = 0;
+        for (let p = 0; p < s.pageCount; p++) total += s.quantity(item, p);
+        const here = s.quantity(item, s.currentPageIndex);
+        lines.push(`- ${item.name} (${item.kind}): ${round2(here)} / ${round2(total)} ${unit}`);
+      }
+    } else {
+      lines.push('', 'There are no takeoff items yet.');
+    }
+    return lines.join('\n');
   }
 
   // Counts the chosen takeoff items on the pages and adds the counts to the drawing
@@ -447,6 +659,32 @@ async function askClaude(apiKey: string, model: string, tiles: Tile[], prompt: s
   return message.content.map(b => b.type === 'text' ? b.text : '').join('');
 }
 
+async function chatClaude(apiKey: string, model: string, system: string, turns: ChatTurn[],
+                          onText: (delta: string) => void, signal: AbortSignal): Promise<void> {
+  const client = await claudeClient(apiKey);
+  const modern = !/(^claude-3|-4-5|-4-1|-4-0|sonnet-4$|opus-4$)/.test(model);
+  const stream = client.beta.messages.stream({
+    model,
+    max_tokens: 16000,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    ...(modern ? { output_config: { effort: 'medium' as const } } : {}),
+    system,
+    messages: turns.map(t => ({
+      role: t.role,
+      content: [
+        ...t.images.map(data => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg' as const, data } })),
+        { type: 'text' as const, text: t.text },
+      ],
+    })),
+  }, { signal });
+  stream.on('text', delta => onText(delta));
+  const message = await stream.finalMessage();
+  if (message.stop_reason === 'refusal') {
+    throw new Error(`Claude declined this request${message.stop_details?.category ? ` (${message.stop_details.category})` : ''}.`);
+  }
+}
+
 // MARK: - ChatGPT (OpenAI REST API)
 async function askOpenAI(apiKey: string, model: string, tiles: Tile[], prompt: string): Promise<string> {
   const body = {
@@ -474,6 +712,34 @@ async function askOpenAI(apiKey: string, model: string, tiles: Tile[], prompt: s
   return message?.content ?? '';
 }
 
+async function chatOpenAI(apiKey: string, model: string, system: string, turns: ChatTurn[],
+                          onText: (delta: string) => void, signal: AbortSignal): Promise<void> {
+  const body = {
+    model,
+    stream: true,
+    messages: [
+      { role: 'system', content: system },
+      ...turns.map(t => t.images.length ? {
+        role: t.role,
+        content: [
+          ...t.images.map(data => ({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${data}`, detail: 'high' } })),
+          { type: 'text', text: t.text },
+        ],
+      } : { role: t.role, content: t.text }),
+    ],
+  };
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+  await readEvents(response, json => {
+    const delta = (json as { choices?: { delta?: { content?: string; refusal?: string } }[] }).choices?.[0]?.delta;
+    if (delta?.refusal) throw new Error(`ChatGPT declined: ${delta.refusal}`);
+    if (delta?.content) onText(delta.content);
+  });
+}
+
 // MARK: - Gemini (Google Generative Language REST API)
 async function askGemini(apiKey: string, model: string, tiles: Tile[], prompt: string): Promise<string> {
   const body = {
@@ -494,6 +760,84 @@ async function askGemini(apiKey: string, model: string, tiles: Tile[], prompt: s
   };
   if (json.promptFeedback?.blockReason) throw new Error(`Gemini declined: ${json.promptFeedback.blockReason}`);
   return json.candidates?.[0]?.content?.parts?.map(p => p.text ?? '').join('') ?? '';
+}
+
+async function chatGemini(apiKey: string, model: string, system: string, turns: ChatTurn[],
+                          onText: (delta: string) => void, signal: AbortSignal): Promise<void> {
+  const body = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: turns.map(t => ({
+      role: t.role === 'assistant' ? 'model' : 'user',
+      parts: [...t.images.map(data => ({ inline_data: { mime_type: 'image/jpeg', data } })), { text: t.text }],
+    })),
+  };
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+  const response = await fetch(url, {
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify(body),
+  });
+  await readEvents(response, json => {
+    const chunk = json as { candidates?: { content?: { parts?: { text?: string }[] } }[]; promptFeedback?: { blockReason?: string } };
+    if (chunk.promptFeedback?.blockReason) throw new Error(`Gemini declined: ${chunk.promptFeedback.blockReason}`);
+    const text = chunk.candidates?.[0]?.content?.parts?.map(p => p.text ?? '').join('') ?? '';
+    if (text) onText(text);
+  });
+}
+
+// Server-sent events of a streamed answer ("data: {...}" lines)
+async function readEvents(response: Response, onData: (json: unknown) => void): Promise<void> {
+  if (!response.ok || !response.body) {
+    await readJson(response);
+    throw new Error(`${response.status}: no answer`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let end: number;
+    while ((end = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, end).trim();
+      buffer = buffer.slice(end + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') return;
+      let json: unknown;
+      try { json = JSON.parse(data); } catch { continue; }
+      onData(json);
+    }
+  }
+}
+
+// The answer without the action block (also while it is still being written)
+function visibleText(raw: string): string {
+  return raw.replace(ACTION_BLOCK, '').trim();
+}
+
+function parseAction(raw: string, pageIndex: number): ChatCountAction | undefined {
+  const match = ACTION_BLOCK.exec(raw);
+  if (!match) return undefined;
+  try {
+    const json = JSON.parse(match[1].trim()) as { items?: unknown; pages?: unknown; instructions?: unknown };
+    const items = Array.isArray(json.items) ? json.items.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+    if (!items.length) return undefined;
+    return {
+      items: items.slice(0, 20),
+      pages: json.pages === 'all' ? 'all' : 'current',
+      instructions: typeof json.instructions === 'string' ? json.instructions : '',
+      pageIndex,
+      state: 'ready',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function round2(x: number): number {
+  return Math.round(x * 100) / 100;
 }
 
 // MARK: - Helpers
@@ -536,6 +880,7 @@ function errorText(e: unknown): string {
   if (status === 401 || /\b401\b|invalid.*key|API key not valid|authentication/i.test(message)) return 'The API key was not accepted. Check it and try again.';
   if (status === 404 || /\b404\b|not.?found/i.test(message)) return `Model not found: ${message}`;
   if (status === 429 || /\b429\b/.test(message)) return 'Rate limit or quota reached on this account. Wait a moment or check billing.';
+  if (e instanceof DOMException && e.name === 'AbortError') return 'Stopped.';
   if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return 'Could not reach the AI service (network or browser blocked the request).';
   return message;
 }
