@@ -5,6 +5,11 @@
 //   [Parts:Name] → sum of the property "Name" of the parts right below (each one already
 //                  includes its own parts), e.g. "[Qty] * [Price Each] + [Parts:Price Total]"
 //   + - * / ( ) and numbers. Anything else is plain text.
+//   js: …   → JavaScript code (see formula-script.ts)
+// The result is in the input units and is shown converted to the output units (see units.ts).
+
+import { isScriptFormula, runScript, scriptCode } from './formula-script';
+import { convertUnits } from './units';
 
 export type PropType = 'number' | 'text';
 
@@ -208,6 +213,17 @@ export function findProp(props: PropertyDef[], name: string): PropertyDef | unde
 }
 
 export function evaluate(node: EvalNode, name: string, seen: Set<string> = new Set()): EvalResult {
+  const result = evaluateRaw(node, name, seen);
+  // Input units → output units (12 IN → 1 FT); units that can't be converted leave the value as is
+  const def = findProp(node.props, name);
+  if (def && typeof result.value === 'number' && def.inputUnits && def.units) {
+    const converted = convertUnits(result.value, def.inputUnits, def.units);
+    if (converted !== null) return { ...result, value: converted, units: def.units };
+  }
+  return result;
+}
+
+function evaluateRaw(node: EvalNode, name: string, seen: Set<string>): EvalResult {
   const def = findProp(node.props, name);
   const takeoffName = TAKEOFF_PROPS.find(t => t.toLowerCase() === name.trim().toLowerCase()) as keyof TakeoffValues;
   // Measured values of an element
@@ -224,6 +240,20 @@ export function evaluate(node: EvalNode, name: string, seen: Set<string> = new S
   try {
     const formula = def.formula.trim();
     if (formula === '') return { value: def.type === 'text' ? '' : 0, units: def.units };
+
+    // JavaScript code
+    if (isScriptFormula(formula)) {
+      let error: string | undefined;
+      const value = (r: EvalResult) => { if (r.error && !error) error = r.error; return r.value; };
+      const result = runScript(scriptCode(formula), {
+        ref: ref => value(reference(node, def, ref, seen)),
+        parent: name => value(name === undefined ? reference(node, def, '..', seen)
+          : node.parent ? evaluate(node.parent, String(name), seen) : { value: 0, units: '', error: 'No parent' }),
+        parts: name => Number(value(reference(node, def, `Parts:${name}`, seen))) || 0,
+      });
+      if (typeof result === 'number') return { value: isFinite(result) ? result : 0, units: def.units, error };
+      return { value: def.type === 'number' && result.trim() !== '' && isFinite(Number(result)) ? Number(result) : result, units: def.units, error };
+    }
 
     // Exactly one reference: copies the value as is (text or number, and its units)
     const single = /^\[([^\]]*)\]$/.exec(formula);

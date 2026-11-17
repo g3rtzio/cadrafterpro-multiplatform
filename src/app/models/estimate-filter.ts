@@ -14,7 +14,8 @@ export const FILTER_OPS: FilterOp[] = [
 export type FilterLogic = 'AND' | 'OR' | 'NOT AND' | 'NOT OR';
 export const FILTER_LOGICS: FilterLogic[] = ['AND', 'OR', 'NOT AND', 'NOT OR'];
 
-export interface FilterCondition { kind: 'condition'; id: string; field: string; op: FilterOp; value: string; }
+// off = unticked in the builder: kept, but it doesn't filter
+export interface FilterCondition { kind: 'condition'; id: string; field: string; op: FilterOp; value: string; off?: boolean; }
 export interface FilterGroup { kind: 'group'; id: string; logic: FilterLogic; items: FilterNode[]; }
 export type FilterNode = FilterCondition | FilterGroup;
 
@@ -66,15 +67,40 @@ export function compare(actual: unknown, op: FilterOp, expected: string): boolea
 // Does a row pass the filter? `value` reads one field of the row. An empty group lets everything pass.
 export function matchesFilter(node: FilterNode, value: (field: string) => unknown): boolean {
   if (node.kind === 'condition') return !node.field || compare(value(node.field), node.op, node.value);
-  if (node.items.length === 0) return true;
-  const results = node.items.map(item => matchesFilter(item, value));
+  const items = node.items.filter(i => !isNodeEmpty(i));
+  if (items.length === 0) return true;
+  const results = items.map(item => matchesFilter(item, value));
   const any = node.logic === 'OR' || node.logic === 'NOT OR';
   const result = any ? results.some(Boolean) : results.every(Boolean);
   return node.logic.startsWith('NOT') ? !result : result;
 }
 
+// Unticked conditions and groups with nothing that filters don't count
+function isNodeEmpty(node: FilterNode): boolean {
+  if (node.kind === 'condition') return !!node.off || !node.field.trim();
+  return node.items.every(isNodeEmpty);
+}
+
 export function isFilterEmpty(node: FilterGroup | null): boolean {
-  return !node || node.items.length === 0;
+  return !node || isNodeEmpty(node);
+}
+
+// A filter saved with a name (Filter Builder › Save), offered in Estimating › Filter
+export interface NamedFilter { id: string; name: string; filter: FilterGroup; }
+
+// Ready-made filters, always in the list (they can be copied with Save As)
+export function presetFilters(): NamedFilter[] {
+  const make = (id: string, name: string, logic: FilterLogic, conds: [string, FilterOp, string][]): NamedFilter => ({
+    id, name, filter: { kind: 'group', id: newFilterId(), logic,
+      items: conds.map(([field, op, value]) => ({ kind: 'condition', id: newFilterId(), field, op, value })) },
+  });
+  return [
+    make('preset-takeoff', 'Takeoff items only', 'AND', [['IsTakeoffItem', 'equals', 'True']]),
+    make('preset-parts', 'Parts only', 'AND', [['IsPart', 'equals', 'True']]),
+    make('preset-priced', 'With price', 'AND', [['Price Total', 'is greater than', '0']]),
+    make('preset-unpriced', 'Without price', 'AND', [['Price Total', 'equals', '0']]),
+    make('preset-measured', 'Measured (Qty > 0)', 'AND', [['Qty', 'is greater than', '0']]),
+  ];
 }
 
 // Text of the filter row under a header: "concrete" (contains), "> 10", ">= 5", "< 3", "= 0", "<> 2", "!= 2"
@@ -90,6 +116,7 @@ export function matchesColumnText(actual: unknown, filter: string): boolean {
 
 // Readable summary: "IsTakeoffItem equals True AND Qty is greater than 10"
 export function filterText(node: FilterNode): string {
+  if (node.kind === 'group') node = { ...node, items: node.items.filter(i => !isNodeEmpty(i)) };
   if (node.kind === 'condition') {
     return node.op === 'is blank' || node.op === 'is not blank' ? `${node.field} ${node.op}` : `${node.field} ${node.op} ${node.value}`;
   }
@@ -106,7 +133,8 @@ export function parseFilter(text: string): FilterGroup | null {
       const o = n as Record<string, unknown>;
       if (o['kind'] === 'condition') {
         const op = FILTER_OPS.includes(o['op'] as FilterOp) ? o['op'] as FilterOp : 'equals';
-        return { kind: 'condition', id: newFilterId(), field: String(o['field'] ?? ''), op, value: String(o['value'] ?? '') };
+        return { kind: 'condition', id: newFilterId(), field: String(o['field'] ?? ''), op, value: String(o['value'] ?? ''),
+          ...(o['off'] ? { off: true } : {}) };
       }
       if (o['kind'] === 'group') {
         const logic = FILTER_LOGICS.includes(o['logic'] as FilterLogic) ? o['logic'] as FilterLogic : 'AND';

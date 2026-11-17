@@ -8,7 +8,7 @@ import {
   isArchitecturalScale, kindTitle, kindUnit, polygonArea, polylineLength, quantityText, rectContains,
   scaleName, uid,
 } from '../../models/takeoff';
-import { FilterGroup, isFilterEmpty, matchesFilter, parseFilter } from '../../models/estimate-filter';
+import { FilterGroup, NamedFilter, isFilterEmpty, matchesFilter, parseFilter } from '../../models/estimate-filter';
 import { readPage, readPdf, writePdf } from '../pdf-file/pdf-file';
 import { PageGeometry, SnapIndex, openRenderer } from '../pdf-render/pdf-render';
 import { Cell, xlsxBlob } from '../xlsx/xlsx';
@@ -2144,7 +2144,39 @@ export class DrawingStore {
   estimateFilter: FilterGroup | null = parseFilter(readSetting('estimateFilter') ?? '');
   filterOpen = false;
 
+  // Name of the saved filter in use ('' = a filter without a name)
+  estimateFilterName = readSetting('estimateFilterName') ?? '';
+  // Filters saved with a name (in this browser, for every document)
+  savedFilters: NamedFilter[] = loadSavedFilters();
+
   get filterActive(): boolean { return !isFilterEmpty(this.estimateFilter); }
+
+  saveNamedFilter(name: string, filter: FilterGroup, id?: string): NamedFilter {
+    const trimmed = name.trim() || 'Filter';
+    let entry = id ? this.savedFilters.find(f => f.id === id) : undefined;
+    if (entry) {
+      entry.name = trimmed;
+      entry.filter = structuredClone(filter);
+    } else {
+      entry = { id: `filter-${uid()}`, name: trimmed, filter: structuredClone(filter) };
+      this.savedFilters.push(entry);
+    }
+    this.savedFilters.sort((a, b) => a.name.localeCompare(b.name));
+    writeSetting('savedFilters', JSON.stringify(this.savedFilters));
+    this.touch();
+    return entry;
+  }
+
+  deleteNamedFilter(id: string): void {
+    this.savedFilters = this.savedFilters.filter(f => f.id !== id);
+    writeSetting('savedFilters', JSON.stringify(this.savedFilters));
+    this.touch();
+  }
+
+  // Estimating › Filter menu: use a saved (or ready-made) filter right away
+  useNamedFilter(entry: NamedFilter): void {
+    this.setEstimateFilter(entry.filter, entry.name);
+  }
 
   openFilter(): void {
     this.filterOpen = true;
@@ -2156,10 +2188,20 @@ export class DrawingStore {
     this.touch();
   }
 
-  setEstimateFilter(filter: FilterGroup | null): void {
+  setEstimateFilter(filter: FilterGroup | null, name = ''): void {
     this.estimateFilter = filter && !isFilterEmpty(filter) ? structuredClone(filter) : null;
+    this.estimateFilterName = this.estimateFilter ? name : '';
     writeSetting('estimateFilter', this.estimateFilter ? JSON.stringify(this.estimateFilter) : '');
+    writeSetting('estimateFilterName', this.estimateFilterName);
     this.touch();
+  }
+
+  // Every row of the estimate (groups' rows and parts included), for counting what a filter shows
+  allEstimateRows(): EstimateRow[] {
+    const out: EstimateRow[] = [];
+    const add = (r: EstimateRow) => { out.push(r); r.subRows.forEach(add); };
+    this.estimateRows().forEach(add);
+    return out;
   }
 
   // One field of a row, for the filters: a property, or IsTakeoffItem / IsPart / Name / Type / Pages / Color
@@ -2393,6 +2435,18 @@ async function ensureWritePermission(handle: FileSystemFileHandle): Promise<bool
     return await h.requestPermission?.({ mode: 'readwrite' }) === 'granted';
   } catch {
     return false;
+  }
+}
+
+function loadSavedFilters(): NamedFilter[] {
+  try {
+    const list = JSON.parse(readSetting('savedFilters') ?? '[]') as { id?: string; name?: string; filter?: unknown }[];
+    return Array.isArray(list) ? list.flatMap(f => {
+      const filter = parseFilter(JSON.stringify(f.filter ?? null));
+      return filter && f.id ? [{ id: f.id, name: String(f.name ?? 'Filter'), filter }] : [];
+    }) : [];
+  } catch {
+    return [];
   }
 }
 

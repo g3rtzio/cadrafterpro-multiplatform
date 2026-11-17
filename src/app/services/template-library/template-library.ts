@@ -222,6 +222,16 @@ export class TemplateLibrary {
     this.changed();
   }
 
+  // The whole list of properties of the template or one of its parts (the property grid:
+  // rows added, deleted, moved or edited). The Name property names the template.
+  setProps(owner: { props: PropertyDef[] }, props: PropertyDef[]): void {
+    owner.props = props;
+    const t = this.selectedTemplate;
+    const name = findProp(props, 'Name')?.formula.trim();
+    if (t && owner === t && name) t.name = name;
+    this.changed();
+  }
+
   duplicate(): void {
     const t = this.selectedTemplate;
     if (!t) return;

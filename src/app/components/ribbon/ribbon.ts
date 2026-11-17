@@ -4,6 +4,7 @@ import { DrawingStore, RibbonTab } from '../../services/drawing.store/drawing.st
 import { MARKUP_TOOLS, MarkupTools } from '../../services/markup-tools/markup-tools';
 import { OcrService } from '../../services/ocr/ocr';
 import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
+import { presetFilters } from '../../models/estimate-filter';
 import { Icon } from '../icon/icon';
 
 // Ribbon-style top bar with tabs (Home, Estimating, Templates) — port of RibbonView.swift
@@ -250,10 +251,44 @@ import { Icon } from '../icon/icon';
             <button class="ribbon-button" title="Columns of the estimate" [disabled]="!s.hasDocument" (click)="s.openColumns()">
               <app-icon class="icon" name="view_column" /><span>Columns</span>
             </button>
-            <button class="ribbon-button" [class.active]="s.filterActive" title="Filter Builder: show only the rows that pass conditions"
-                    [disabled]="!s.hasDocument" (click)="s.openFilter()">
-              <app-icon class="icon accent" name="filter_alt" /><span>Filter</span>
-            </button>
+            <!-- Filter: the Filter Builder, or a saved / ready-made filter from the menu -->
+            <div class="menu-anchor ribbon-split" [class.active]="s.filterActive">
+              <button class="ribbon-button" title="Filter Builder: show only the rows that pass conditions"
+                      [disabled]="!s.hasDocument" (click)="s.openFilter()">
+                <app-icon class="icon accent" name="filter_alt" /><span>Filter</span>
+              </button>
+              <button class="ribbon-arrow" [disabled]="!s.hasDocument" (click)="toggleMenu('filter', $event)">
+                <app-icon class="icon small" name="expand_more" />
+              </button>
+              @if (openMenu() === 'filter') {
+                <div class="menu" (click)="$event.stopPropagation()">
+                  <button class="menu-item" (click)="openMenu.set(null); s.openFilter()">
+                    <app-icon class="icon small" name="add" />New / Edit Filter…
+                  </button>
+                  @if (s.filterActive) {
+                    <button class="menu-item" (click)="openMenu.set(null); s.setEstimateFilter(null)">
+                      <app-icon class="icon small" name="filter_alt_off" />Clear Filter
+                    </button>
+                  }
+                  <div class="menu-divider"></div>
+                  <div class="menu-header">Saved Filters</div>
+                  @for (f of s.savedFilters; track f.id) {
+                    <button class="menu-item" (click)="openMenu.set(null); s.useNamedFilter(f)">
+                      <app-icon class="icon small" [name]="s.estimateFilterName === f.name ? 'check' : 'filter_alt'" />{{ f.name }}
+                    </button>
+                  } @empty {
+                    <div class="menu-header">None yet</div>
+                  }
+                  <div class="menu-divider"></div>
+                  <div class="menu-header">Ready-made</div>
+                  @for (f of presets; track f.id) {
+                    <button class="menu-item" (click)="openMenu.set(null); s.useNamedFilter(f)">
+                      <app-icon class="icon small" [name]="s.estimateFilterName === f.name ? 'check' : 'bolt'" />{{ f.name }}
+                    </button>
+                  }
+                </div>
+              }
+            </div>
             @if (s.filterActive) {
               <button class="ribbon-button" title="Show every row again" (click)="s.setEstimateFilter(null)">
                 <app-icon class="icon" name="filter_alt_off" /><span>Clear Filter</span>
@@ -419,6 +454,7 @@ export class Ribbon {
   readonly ocr = inject(OcrService);
   readonly library = inject(TemplateLibrary);
   readonly costDatabase = inject(CostDatabase);
+  readonly presets = presetFilters();
 
   // Part templates of the library, offered in the Estimating New Part menu
   partTemplates() { return this.library.watch().data.templates.filter(t => t.isPart); }

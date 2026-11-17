@@ -480,15 +480,35 @@ body.resizing-column { cursor: col-resize; user-select: none; }
 .estimate-table .part-icon { color: #ffcc00; margin-right: 4px; }
 
 /* MARK: - Formula Editor */
-.formula-dialog { width: 620px; }
+.formula-dialog { width: 720px; max-width: calc(100vw - 32px); }
+.formula-dialog .props-toolbar { flex-wrap: wrap; }
 .formula-body { display: flex; gap: 10px; height: 220px; }
 .formula-text { flex: 1; resize: none; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .formula-props { width: 170px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
 .formula-prop { padding: 2px 6px; border-radius: 4px; cursor: grab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .formula-prop:hover { background: var(--accent-soft); }
-.op-button { min-width: 32px; font-family: ui-monospace, Consolas, monospace; }
+.op-button { min-width: 32px; flex: none; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; }
 .formula-result { font-size: 12px; }
 .props-table .prop-name { cursor: grab; }
+
+/* Shared property grid (Properties window, Templates, Cost Database) */
+.props-grid { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.props-grid .props-toolbar .toolbar-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+.props-table th.units-col { width: 92px; }
+.props-table .formula-cell { display: flex; align-items: center; gap: 2px; }
+.props-table .formula-cell input { flex: 1; min-width: 0; }
+.props-table input.formula.script { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+.props-table .dots-button { flex: none; padding: 0 6px; line-height: 18px; font-weight: 600; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--panel); cursor: pointer; }
+.props-table .dots-button:hover { background: var(--accent-soft); }
+.props-table input.units-input { text-transform: none; }
+.script-banner { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.script-banner span { flex: 1; }
+.formula-tabs { display: flex; gap: 4px; }
+.formula-tabs button { border-radius: 6px; padding: 3px 12px; }
+.formula-tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.formula-help { margin: 0; }
 
 /* MARK: - Estimating Layouts (panel on the left of the estimate) */
 app-layouts-panel.layouts-panel {
@@ -543,7 +563,7 @@ app-templates-view.templates-view:focus { outline: none; }
 .templates-detail-header button { display: flex; align-items: center; gap: 4px; }
 .templates-fields { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
 .templates-fields label { display: flex; align-items: center; gap: 6px; }
-.templates-props { max-height: none; }
+.templates-props .props-scroll { max-height: none; }
 .templates-detail p { margin: 0; }
 
 /* Shift + click selects a range of rows: no text selection while clicking */

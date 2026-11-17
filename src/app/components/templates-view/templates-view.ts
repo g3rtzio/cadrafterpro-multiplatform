@@ -1,11 +1,12 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
-import { PROPERTY_GROUPS, PropertyDef, evaluate, formatResult } from '../../models/estimate';
+import { EvalNode, PropertyDef } from '../../models/estimate';
 import { TAKEOFF_KINDS, TakeoffKind, kindIcon, kindTitle } from '../../models/takeoff';
 import { PART_DRAG_TYPE, TakeoffTemplate, TemplatePart } from '../../models/templates';
 import { DrawingStore } from '../../services/drawing.store/drawing.store';
 import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { AutoFocus } from '../auto-focus/auto-focus';
+import { PropsGrid } from '../props-grid/props-grid';
 import { Icon } from '../icon/icon';
 
 // "Templates" tab (PlanSwift style): the template library on the left (folders, templates and
@@ -18,7 +19,7 @@ import { Icon } from '../icon/icon';
 // The "Cost Database" tab is this same view with [database]="true": a library of priced parts only.
 @Component({
   selector: 'app-templates-view',
-  imports: [Icon, AutoFocus, NgTemplateOutlet],
+  imports: [Icon, AutoFocus, NgTemplateOutlet, PropsGrid],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'templates-view',
@@ -82,34 +83,13 @@ import { Icon } from '../icon/icon';
             <span class="secondary small">{{ t.parts.length }} {{ t.parts.length === 1 ? (t.isPart ? 'sub-part' : 'part') : (t.isPart ? 'sub-parts' : 'parts') }}</span>
           </div>
         }
-        <div class="props-scroll templates-props">
-          <table class="props-table">
-            <thead><tr><th>Name</th><th>Formula</th><th>Input Units</th><th>Example Result</th><th>Output Units</th></tr></thead>
-            <tbody>
-              @let owner = part ?? t;
-              @for (group of groups(owner); track group.name) {
-                <tr class="props-group"><td colspan="5">{{ group.name }}</td></tr>
-                @for (p of group.props; track p.name) {
-                  <tr>
-                    <td class="indent">{{ p.name }}</td>
-                    @if (p.takeoff) {
-                      <td class="secondary">Measured on the plan</td><td></td><td></td>
-                    } @else {
-                      <td><input [value]="p.formula" (change)="lib.updateProp(owner, p.name, { formula: value($event) })" /></td>
-                      <td><input [value]="p.inputUnits" (change)="lib.updateProp(owner, p.name, { inputUnits: value($event) })" /></td>
-                      <td class="num result">{{ example(owner, p) }}</td>
-                    }
-                    <td><input [value]="p.units" [disabled]="!!p.takeoff"
-                               (change)="lib.updateProp(owner, p.name, { units: value($event) })" /></td>
-                  </tr>
-                }
-              }
-            </tbody>
-          </table>
-        </div>
+        @let owner = part ?? t;
+        <app-props-grid class="templates-props" [props]="owner.props" [evalNode]="exampleNode" resultTitle="Example Result"
+                        [fill]="true" (propsChange)="lib.setProps(owner, $event)" />
         <p class="secondary small">
-          Formulas work like in the estimate: [Qty] * [Cost Each]. Parts use [..] to take the value of the item above them.
-          The example result is calculated without measurements (they count as 0).
+          Formulas work like in the estimate: [Qty] * [Cost Each], or JavaScript after js:. Parts use [..] to take the value
+          of the item above them. The example result is calculated without measurements (they count as 0) and converted
+          from the input units to the output units.
         </p>
       } @else {
         <div class="estimate-empty">
@@ -219,28 +199,23 @@ export class TemplatesView {
     return this.library.partsOf(t, parentId);
   }
 
-  // Properties shown by group (Item, Estimating, Takeoff Data, WBS), then any other group
-  groups(owner: { props: PropertyDef[] }): { name: string; props: PropertyDef[] }[] {
-    const names = [...PROPERTY_GROUPS, ...new Set(owner.props.map(p => p.group).filter(g => !PROPERTY_GROUPS.includes(g)))];
-    return names.map(name => ({ name, props: owner.props.filter(p => p.group === name) })).filter(g => g.props.length);
-  }
-
-  // Result of a formula with no measurement (parts read their template's values through [..])
-  example(owner: { props: PropertyDef[] }, p: PropertyDef): string {
+  // What the example results are calculated from: no measurements (0), parts read the items above
+  // them through [..] and the parts below through [Parts:…]. `props` is the list shown in the grid.
+  readonly exampleNode = (props: PropertyDef[]): EvalNode => {
     const t = this.library.selectedTemplate;
+    const owner: { props: PropertyDef[] } | undefined = this.library.selectedPart ?? t;
     const zero = { 'Area': 0, 'Linear Total': 0, 'Segment Count': 0, 'Point Count': 0, 'Section Count': 0 };
-    // Parts right below, for [Parts:…] totals
+    const propsOf = (o: { props: PropertyDef[] }) => o === owner ? props : o.props;
     const children = (o: { props: PropertyDef[] }, depth: number) => () => !t || depth > 20 ? [] :
       t.parts.filter(x => x.parentId === (o === t ? null : (o as TemplatePart).id)).map(x => node(x, depth + 1));
-    const node = (o: { props: PropertyDef[] }, depth = 0): Parameters<typeof evaluate>[0] => {
-      if (!t || o === t || depth > 20) return { props: o.props, takeoff: zero, parent: null, children: children(o, depth) };
+    const node = (o: { props: PropertyDef[] }, depth = 0): EvalNode => {
+      if (!t || o === t || depth > 20) return { props: propsOf(o), takeoff: zero, parent: null, children: children(o, depth) };
       const part = o as TemplatePart;
       const parent = part.parentId ? t.parts.find(x => x.id === part.parentId) : t;
-      return { props: o.props, takeoff: null, parent: parent ? node(parent, depth + 1) : null, children: children(o, depth) };
+      return { props: propsOf(o), takeoff: null, parent: parent ? node(parent, depth + 1) : null, children: children(o, depth) };
     };
-    const result = evaluate(node(owner), p.name);
-    return result.error ? '' : formatResult(result, p.decimals);
-  }
+    return owner ? node(owner) : { props, takeoff: zero, parent: null };
+  };
 
   renameFolder(id: string, event: Event): void {
     if (this.library.renaming !== id) return;

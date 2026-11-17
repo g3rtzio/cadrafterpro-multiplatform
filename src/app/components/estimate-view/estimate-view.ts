@@ -61,7 +61,9 @@ interface Line {
     @if (s.filterActive) {
       <div class="filter-bar">
         <app-icon class="icon small accent" name="filter_alt" />
-        <span class="filter-text" [title]="filterSummary()">Filter: {{ filterSummary() }}</span>
+        <span class="filter-text" [title]="filterSummary()">
+          Filter{{ s.estimateFilterName ? ' "' + s.estimateFilterName + '"' : '' }}: {{ filterSummary() }}
+        </span>
         <button (click)="s.openFilter(); $event.stopPropagation()">Edit…</button>
         <button (click)="s.setEstimateFilter(null); $event.stopPropagation()">Clear</button>
       </div>
