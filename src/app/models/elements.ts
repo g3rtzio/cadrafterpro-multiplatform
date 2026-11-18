@@ -14,6 +14,7 @@ export class Measurement {
   readonly id = uid();
   readonly isMeasurement = true;
   points: Pt[] = [];                       // in page coordinates (PDF points, y up)
+  cutouts: Pt[][] = [];                    // holes of an area (Cut Out tool), subtracted from it
   name = '';                               // item name (Revu "Subject")
   contents = '';                           // quantity text ("12.50 ft")
   visible = true;
@@ -52,7 +53,9 @@ export class Measurement {
   }
 
   move(dx: number, dy: number): void {
-    this.points = this.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
+    const shift = (p: Pt) => ({ x: p.x + dx, y: p.y + dy });
+    this.points = this.points.map(shift);
+    if (this.cutouts.length) this.cutouts = this.cutouts.map(hole => hole.map(shift));
   }
 
   // MARK: - Caption (text with the measurement)
@@ -113,6 +116,8 @@ export class Markup {
   dashed = false;
   rect: Rect = { x: 0, y: 0, w: 0, h: 0 }; // /Rect
   vertices: Pt[] | null = null;            // /Vertices (Polygon, PolyLine)
+  cutouts: Pt[][] = [];                    // holes of a Revu area (/CPCutouts, Cut Out tool)
+  cutoutsChanged = false;                  // its /AP is drawn again on save (with the holes)
   line: Pt[] | null = null;                // /L (Line)
   inkList: Pt[][] | null = null;           // /InkList (Ink: Revu Pen and Highlight)
   multiply = false;                        // /BM /Multiply (Revu Highlight)
@@ -240,6 +245,7 @@ export class Markup {
     const shift = (p: Pt) => ({ x: p.x + dx, y: p.y + dy });
     this.rect = { ...this.rect, x: this.rect.x + dx, y: this.rect.y + dy };
     if (this.vertices) this.vertices = this.vertices.map(shift);
+    if (this.cutouts.length) this.cutouts = this.cutouts.map(hole => hole.map(shift));
     if (this.line) this.line = this.line.map(shift);
     if (this.inkList) this.inkList = this.inkList.map(path => path.map(shift));
     if (this.callout) this.callout = this.callout.map(shift);

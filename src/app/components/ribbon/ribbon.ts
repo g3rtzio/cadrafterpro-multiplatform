@@ -6,6 +6,7 @@ import { TextSelect } from '../../services/text-select/text-select';
 import { SlipSheet } from '../../services/slip-sheet/slip-sheet';
 import { OcrService } from '../../services/ocr/ocr';
 import { PageLabeler } from '../../services/page-labels/page-labels';
+import { CutoutTool } from '../../services/cutout-tool/cutout-tool';
 import { CalcTools } from '../../services/calc-tools/calc-tools';
 import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { presetFilters } from '../../models/estimate-filter';
@@ -125,6 +126,22 @@ import { Icon } from '../icon/icon';
                 }
               </div>
             }
+            <!-- Cut Out: a hole in an area (click = draw it; arrow = remove the holes of the selection) -->
+            <div class="menu-anchor ribbon-split" [class.active]="cutout.active()">
+              <button class="ribbon-button" [disabled]="!s.hasDocument" (click)="cutout.toggle()"
+                      title="Cut Out: click the corners of a hole inside an area; double click or Enter closes it. The hole is taken off the area.">
+                <app-icon class="icon" [style.color]="colors.green" name="content_cut" /><span>Cut Out</span>
+              </button>
+              <button class="ribbon-arrow" [disabled]="!s.hasDocument" (click)="toggleMenu('cutout', $event)">
+                <app-icon class="icon small" name="expand_more" />
+              </button>
+              @if (openMenu() === 'cutout') {
+                <div class="menu" (click)="$event.stopPropagation()">
+                  <button class="menu-item" (click)="openMenu.set(null); cutout.active() || cutout.toggle()">Draw a Cut Out</button>
+                  <button class="menu-item" [disabled]="!s.selectionHasCutouts" (click)="openMenu.set(null); s.removeCutouts()">Remove Cut Outs from the Selected Areas</button>
+                </div>
+              }
+            </div>
           </div>
           <div class="ribbon-group-title">Takeoff</div>
         </div>
@@ -594,6 +611,7 @@ export class Ribbon {
   readonly tabs: RibbonTab[] = ['Home', 'Page', 'Estimating', 'Templates', 'Cost Database'];
   readonly labeler = inject(PageLabeler);
   readonly calc = inject(CalcTools);
+  readonly cutout = inject(CutoutTool);
 
   // Page tab: pages of another PDF go after the current page (the Insert Pages window asks which)
   pickPages(): void {

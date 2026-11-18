@@ -15,6 +15,7 @@ import { Shape, TEXT_FONT, markupShapes, pageShapes, pathOf, rectPath, viewportS
 import { TextSearch } from '../../services/text-search/text-search';
 import { TextSelect } from '../../services/text-select/text-select';
 import { CalcTools } from '../../services/calc-tools/calc-tools';
+import { CutoutTool } from '../../services/cutout-tool/cutout-tool';
 import { OverlayPanel } from '../overlay-panel/overlay-panel';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
@@ -65,6 +66,7 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
             <g [appShapes]="searchShapes()"></g>
             <g [appShapes]="textShapes()"></g>
             <g [appShapes]="calcShapes()"></g>
+            <g [appShapes]="cutoutShapes()"></g>
             <g [appShapes]="liveShapes()"></g>
             <g [appShapes]="markupPreview()"></g>
             <g [appShapes]="overlayHandles()"></g>
@@ -117,6 +119,7 @@ export class PlanView implements OnDestroy {
   readonly search = inject(TextSearch);
   readonly textSelect = inject(TextSelect);
   readonly calc = inject(CalcTools);
+  readonly cutout = inject(CutoutTool);
   readonly textFont = TEXT_FONT;
   private readonly editorField = viewChild<ElementRef<HTMLTextAreaElement>>('editorField');
   readonly ocr = inject(OcrService);
@@ -226,7 +229,7 @@ export class PlanView implements OnDestroy {
     if (s.snapshotMode === 'place') return 'copy';
     if (this.overlayHere()?.adjusting) return 'move';
     if (this.textSelect.active()) return 'text';
-    if (this.calc.mode()) return 'crosshair';
+    if (this.calc.mode() || this.cutout.active()) return 'crosshair';
     if (s.tool !== 'none' || s.drawingViewport || this.markups.tool() || this.ocr.drawingRegion()) return 'crosshair';
     if (this.panning()) return 'grabbing';
     switch (s.interaction) {
@@ -421,6 +424,29 @@ export class PlanView implements OnDestroy {
     const mode = this.calc.mode();
     const hover = this.hover();
     if (mode && now && now.page === g) draw(mode, hover ? [...now.points, hover.point] : now.points, true);
+    return shapes;
+  });
+
+  // Cut Out in progress: the corners so far, the line to the cursor and back to the first corner
+  readonly cutoutShapes = computed<Shape[]>(() => {
+    const now = this.cutout.current();
+    const g = this.geometry();
+    if (!this.cutout.active() || !g || !now || now.pageIndex !== this.pageIndex()) return [];
+    const px = 1 / Math.max(this.zoom(), 0.01);
+    const hover = this.hover();
+    const v = now.points.map(p => g.toView(p));
+    const shapes: Shape[] = [];
+    const red = COLORS.red;
+    const all = hover ? [...v, g.toView(hover.point)] : v;
+    if (all.length >= 3) shapes.push({ d: pathOf(all, true), fill: '#FFFFFF', fillOpacity: 0.55, stroke: 'none', width: 0, opacity: 1 });
+    if (v.length > 1) shapes.push({ d: pathOf(v, false), fill: 'none', stroke: red, width: 2 * px, opacity: 1 });
+    if (hover && v.length) {
+      const rubber = [v[v.length - 1], g.toView(hover.point)];
+      if (v.length > 1) rubber.push(v[0]);
+      shapes.push({ d: pathOf(rubber, false), fill: 'none', stroke: red, width: 1.5 * px, dash: `${6 * px} ${4 * px}`, opacity: 1 });
+    }
+    v.forEach((p, i) => shapes.push({ d: rectPath({ x: p.x - (i ? 3 : 5) * px, y: p.y - (i ? 3 : 5) * px, w: (i ? 6 : 10) * px, h: (i ? 6 : 10) * px }),
+      fill: i ? red : '#FFFFFF', stroke: red, width: 1.5 * px, opacity: 1 }));
     return shapes;
   });
 
@@ -745,7 +771,7 @@ export class PlanView implements OnDestroy {
 
   private refreshHover(e: MouseEvent): void {
     const s = this.store;
-    if (s.tool === 'none' && !this.markups.tool() && !this.calc.mode()) {
+    if (s.tool === 'none' && !this.markups.tool() && !this.calc.mode() && !this.cutout.active()) {
       if (this.hover()) this.hover.set(null);
       return;
     }
@@ -778,6 +804,8 @@ export class PlanView implements OnDestroy {
     if (this.drag?.mode === 'markup') return this.markupPath()?.[0] ?? null;
     const calc = this.calc.current();
     if (calc && calc.page === this.geometry()) return calc.points[calc.points.length - 1];
+    const hole = this.cutout.current();
+    if (hole && hole.pageIndex === page) return hole.points[hole.points.length - 1];
     const clicks = this.markups.clicks();
     if (clicks && clicks.pageIndex === page && clicks.points.length) return clicks.points[clicks.points.length - 1];
     return null;
@@ -787,7 +815,9 @@ export class PlanView implements OnDestroy {
   // within 12 screen pixels. Only while a measuring tool is active.
   private snapToVertex(point: Pt): { point: Pt; snapped: boolean } {
     const s = this.store;
-    if (!s.snapEnabled || (s.tool === 'none' && !this.markups.tool()) || this.markups.isFreehand) return { point, snapped: false };
+    if (!s.snapEnabled || (s.tool === 'none' && !this.markups.tool() && !this.cutout.active()) || this.markups.isFreehand) {
+      return { point, snapped: false };
+    }
     const radius = 12 / Math.max(this.zoom(), 0.01);
     let best: Pt | null = null;
     let bestDistance = radius;
@@ -829,6 +859,19 @@ export class PlanView implements OnDestroy {
 
     // Viewport: start its box
     if (s.drawingViewport) return start('viewport');
+
+    // Cut Out: every click adds a corner of the hole; a click on the first corner closes it
+    if (this.cutout.active()) {
+      const target = this.snap(page, e);
+      const now = performance.now();
+      const last = this.lastClick;
+      const isDouble = !!last && now - last.time < 400 && Math.hypot(screen.x - last.x, screen.y - last.y) < 5;
+      this.lastClick = isDouble ? null : { time: now, x: screen.x, y: screen.y };
+      if (isDouble) this.cutout.finish();
+      else this.cutout.addPoint(this.pageIndex(), target.point, 8 / Math.max(this.zoom(), 0.01));
+      this.hover.set(target);
+      return;
+    }
 
     // Pitch / Triangulate: every click adds a point (with Snap and Ortho)
     if (this.calc.mode()) {
@@ -1135,6 +1178,12 @@ export class PlanView implements OnDestroy {
       this.ocr.cancelRegion();
       return;
     }
+    // Cut Out: Enter closes the hole, Backspace removes its last corner, Esc drops it then leaves the tool
+    if (this.cutout.active()) {
+      if (e.key === 'Enter') { e.preventDefault(); this.cutout.finish(); return; }
+      if (e.key === 'Backspace' && this.cutout.current()) { e.preventDefault(); this.cutout.undoPoint(); return; }
+      if (e.key === 'Escape') { this.cutout.escape(); this.hover.set(null); return; }
+    }
     // Pitch / Triangulate: Esc drops the points in progress, then leaves the tool
     if (this.calc.mode() && e.key === 'Escape') {
       this.calc.escape();
@@ -1189,6 +1238,10 @@ export class PlanView implements OnDestroy {
   // Double click on a text box or callout: edit its text
   onDoubleClick(e: MouseEvent): void {
     const s = this.store;
+    if (this.cutout.active()) {
+      this.cutout.finish();
+      return;
+    }
     if (this.textSelect.active()) {
       const point = this.pagePoint(e);
       if (point) void this.textSelect.selectWord(this.pageIndex(), point, 2 / this.zoom() + 1);

@@ -5,7 +5,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { Markup, Measurement, PlanElement } from '../../models/elements';
 import {
   AREA_UNITS, COLORS, LENGTH_UNITS, LengthUnit, LineStyle, Pt, Rect, ScaleViewport, TakeoffItem, TakeoffKind,
-  isArchitecturalScale, kindTitle, kindUnit, polygonArea, polylineLength, quantityText, rectContains,
+  isArchitecturalScale, kindTitle, kindUnit, netPolygonArea, pointInPolygon, polygonArea, polylineLength, quantityText, rectContains,
   scaleName, uid,
 } from '../../models/takeoff';
 import { FilterGroup, NamedFilter, isFilterEmpty, matchesFilter, parseFilter } from '../../models/estimate-filter';
@@ -77,7 +77,7 @@ interface Snapshot {
 
 // Markup fields that, when Undo changes them, mean the markup must be written again
 const MARKUP_FIELDS = ['pageIndex', 'rect', 'vertices', 'line', 'inkList', 'visible', 'subject', 'contents',
-  'color', 'fillColor', 'lineWidth'] as const;
+  'color', 'fillColor', 'lineWidth', 'cutouts'] as const;
 
 // An element's own fields, without its identity and its PDF object (those never go back)
 function stateOf(el: object): Record<string, unknown> {
@@ -432,8 +432,10 @@ export class DrawingStore {
     for (const [m, state] of snap.markups) {
       const record = m as unknown as Record<string, unknown>;
       const changed = !present.has(m) || MARKUP_FIELDS.some(k => record[k] !== state[k]);
+      const holes = record['cutouts'] !== state['cutouts'];
       Object.assign(m, state);
       if (changed) m.dirty = true;                     // written again on the next save
+      if (holes) m.cutoutsChanged = true;              // its picture in the PDF is drawn again
     }
     this.measurements = snap.measurements.map(([m]) => m);
     this.markups = snap.markups.map(([m]) => m);
@@ -1056,7 +1058,7 @@ export class DrawingStore {
     const list = this.selectedMeasurements;
     if (list.length === 0) return null;
     if (new Set(list.map(m => kindUnit(m.kind))).size !== 1) return null;
-    const total = list.reduce((sum, m) => sum + this.value(m.points, m.kind, m.pageIndex), 0);
+    const total = list.reduce((sum, m) => sum + this.measuredValue(m), 0);
     return quantityText(total, list[0].kind, list[0].lengthUnit);
   }
 
@@ -1184,7 +1186,7 @@ export class DrawingStore {
     m.name = item.name;
     m.contents = item.kind === 'count'
       ? '1'
-      : quantityText(this.value(m.points, item.kind, m.pageIndex), item.kind, m.lengthUnit);
+      : quantityText(this.measuredValue(m, item.kind), item.kind, m.lengthUnit);
   }
 
   // Scale in the format Revu shows: architectural "0.25 in = 1 ft" (1/4" = 1'-0"),
@@ -1462,7 +1464,85 @@ export class DrawingStore {
   quantity(item: TakeoffItem, pageIndex: number): number {
     return this.measurements
       .filter(m => m.itemId === item.id && m.pageIndex === pageIndex)
-      .reduce((sum, m) => sum + this.value(m.points, item.kind, pageIndex), 0);
+      .reduce((sum, m) => sum + this.measuredValue(m, item.kind), 0);
+  }
+
+  // Quantity of one measurement: an area without its cut outs
+  measuredValue(m: Measurement, kind: TakeoffKind = m.kind): number {
+    if (kind !== 'area' || !m.cutouts.length) return this.value(m.points, kind, m.pageIndex);
+    const scale = this.feetPerPoint(m.pageIndex, m.points[0]);
+    return netPolygonArea(m.points, m.cutouts) * scale * scale;
+  }
+
+  // MARK: - Cut Out (holes in areas)
+  // The area a hole drawn on the page belongs to: an area measurement (the app's own or a Revu
+  // area from the PDF) around the hole's points. The selected one wins, then the smallest.
+  cutoutTarget(pageIndex: number, hole: Pt[]): Measurement | Markup | null {
+    const inside = (poly: Pt[]) => hole.every(p => pointInPolygon(p, poly));
+    const candidates: { el: Measurement | Markup; outline: Pt[] }[] = [];
+    for (const el of this.elementsOn(pageIndex)) {
+      if (!el.visible) continue;
+      if (el instanceof Measurement) {
+        if (el.kind === 'area' && el.points.length >= 3 && inside(el.points)) candidates.push({ el, outline: el.points });
+      } else if (isRevuArea(el) && inside(el.vertices!)) {
+        candidates.push({ el, outline: el.vertices! });
+      }
+    }
+    if (!candidates.length) return null;
+    const selected = candidates.find(c => this.selection.includes(c.el));
+    if (selected) return selected.el;
+    candidates.sort((a, b) => polygonArea(a.outline) - polygonArea(b.outline));
+    return candidates[0].el;
+  }
+
+  // Cuts the hole out of the area under it; false when there is no area there
+  addCutout(pageIndex: number, hole: Pt[]): boolean {
+    if (hole.length < 3 || polygonArea(hole) <= 0) return false;
+    const target = this.cutoutTarget(pageIndex, hole);
+    if (!target) return false;
+    this.checkpoint();
+    this.setCutouts(target, [...target.cutouts, hole.map(p => ({ ...p }))]);
+    this.selectElements([target]);
+    this.touch();
+    return true;
+  }
+
+  // Selected areas with holes (for "Remove Cut Outs")
+  get selectionHasCutouts(): boolean {
+    return this.selection.some(el => (el instanceof Measurement || el instanceof Markup) && el.cutouts.length > 0);
+  }
+
+  removeCutouts(): void {
+    const list = this.selection.filter((el): el is Measurement | Markup =>
+      (el instanceof Measurement || el instanceof Markup) && el.cutouts.length > 0);
+    if (!list.length) return;
+    this.checkpoint();
+    list.forEach(el => this.setCutouts(el, []));
+    this.touch();
+  }
+
+  private setCutouts(el: Measurement | Markup, holes: Pt[][]): void {
+    if (el instanceof Measurement) {
+      el.cutouts = holes;
+      this.updateCaption(el);
+      return;
+    }
+    // Revu area: its /Contents ("154.09 sf") follows the share of the outline that is left
+    const outline = el.vertices ?? [];
+    const before = netPolygonArea(outline, el.cutouts);
+    const after = netPolygonArea(outline, holes);
+    el.cutouts = holes;
+    el.cutoutsChanged = true;
+    el.dirty = true;
+    const match = /^(\s*)([0-9][0-9,]*\.?([0-9]*))(.*)$/s.exec(el.contents);
+    if (match && before > 0) {
+      const value = Number(match[2].replace(/,/g, '')) * after / before;
+      const decimals = match[3].length;
+      const text = match[2].includes(',')
+        ? value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+        : value.toFixed(decimals);
+      el.contents = match[1] + text + match[4];
+    }
   }
 
   // Quantity in ft / sf, with the scale where the measurement starts (viewport or page)
@@ -1934,7 +2014,7 @@ export class DrawingStore {
         takeoff['Section Count'] += 1;
         takeoff['Point Count'] += n;
         if (m.kind === 'area') {
-          takeoff['Area'] += this.value(m.points, 'area', m.pageIndex);
+          takeoff['Area'] += this.measuredValue(m, 'area');
           takeoff['Linear Total'] += polylineLength([...m.points, m.points[0]]) * scale;
           takeoff['Segment Count'] += n;
         } else if (m.kind !== 'count') {
@@ -2576,6 +2656,11 @@ export function estimateQuantityText(row: EstimateRow): string {
 
 // Revu writes the measured value in /Contents ("154.09 sf", "52.82 ft").
 // If every markup has a value with the same unit, add them up; otherwise count them.
+// A Revu area measurement read from the PDF (a polygon with a value)
+export function isRevuArea(el: PlanElement): el is Markup {
+  return el instanceof Markup && el.subtype === 'Polygon' && /PolygonDimension/.test(el.intent) && (el.vertices?.length ?? 0) >= 3;
+}
+
 function markupQuantity(list: Markup[]): [number, string] {
   const regex = /^\s*([0-9][0-9,]*\.?[0-9]*)\s*([A-Za-z ]*)\s*$/;
   let total = 0;

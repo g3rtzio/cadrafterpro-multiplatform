@@ -16,6 +16,7 @@ export interface Shape {
   y?: number;
   fill: string;
   fillOpacity?: number;
+  fillRule?: 'evenodd';            // holes (Cut Out) stay empty
   stroke: string;
   width: number;
   dash?: string;
@@ -112,8 +113,9 @@ function measurementShapes(m: Measurement, toView: (p: Pt) => Pt, zoom: number, 
     default: {
       if (points.length < 2) break;
       const dash = dashPattern(m.lineStyle, width);
+      const holes = m.kind === 'area' ? m.cutouts.filter(h => h.length > 2).map(h => ' ' + pathOf(h.map(toView), true)).join('') : '';
       shapes.push({
-        d: pathOf(points, m.kind === 'area'),
+        d: pathOf(points, m.kind === 'area') + holes, fillRule: holes ? 'evenodd' : undefined,
         fill: m.kind === 'area' ? m.areaFillColor : 'none', fillOpacity: m.fillOpacity,
         stroke: m.lineColor, width, dash: dash.length ? dash.join(' ') : undefined, opacity: m.opacity,
       });
@@ -157,8 +159,9 @@ export function markupShapes(m: Markup, g: PageGeometry, shapes: Shape[]): void 
       if (!m.vertices) break;
       const closed = m.subtype === 'Polygon';
       const cloud = closed && m.cloud > 0 ? cloudCurves(m.vertices, m.cloudSize) : null;
-      const d = cloud ? curvesPath(cloud.start, cloud.curves, toView, true) : pathOf(m.vertices.map(toView), closed);
-      shapes.push({ d, fill: closed ? fill : 'none', fillOpacity, stroke, width: width > 0 ? width : 0, dash, opacity: m.opacity });
+      const holes = closed ? m.cutouts.filter(h => h.length > 2).map(h => ' ' + pathOf(h.map(toView), true)).join('') : '';
+      const d = (cloud ? curvesPath(cloud.start, cloud.curves, toView, true) : pathOf(m.vertices.map(toView), closed)) + holes;
+      shapes.push({ d, fillRule: holes ? 'evenodd' : undefined, fill: closed ? fill : 'none', fillOpacity, stroke, width: width > 0 ? width : 0, dash, opacity: m.opacity });
       if (!closed) endingShapes(m, m.vertices, toView, shapes);
       break;
     }

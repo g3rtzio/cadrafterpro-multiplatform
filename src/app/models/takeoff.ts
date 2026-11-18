@@ -228,6 +228,21 @@ export function polylineLength(p: Pt[]): number {
   for (let i = 1; i < p.length; i++) sum += Math.hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y);
   return sum;
 }
+// Area of a polygon minus its holes (Cut Out)
+export function netPolygonArea(p: Pt[], holes: Pt[][] = []): number {
+  return Math.max(0, polygonArea(p) - holes.reduce((sum, h) => sum + polygonArea(h), 0));
+}
+
+// Is the point inside the polygon (even-odd rule)
+export function pointInPolygon(pt: Pt, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < (b.x - a.x) * (pt.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
 export function polygonArea(p: Pt[]): number {
   if (p.length < 3) return 0;
   let sum = 0;
