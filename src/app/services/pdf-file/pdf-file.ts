@@ -340,9 +340,9 @@ export async function writePdf(lib: PDFDocument, input: SaveInput): Promise<Uint
     if (!dict) continue;
     writeMarkup(lib, dict, m);
     // Holes added or removed (Cut Out): the picture other viewers show is drawn again
-    if (m.cutoutsChanged) {
+    if (m.redrawAppearance) {
       dict.set(PDFName.of('AP'), lib.context.obj({ N: markupAppearance(lib, font, m) }));
-      m.cutoutsChanged = false;
+      m.redrawAppearance = false;
     }
     // A markup brought back by Undo after a save is no longer on the page: put it back
     const annots = page.node.Annots();
@@ -807,6 +807,16 @@ function markupAppearance(lib: PDFDocument, font: PDFFont, m: Markup): PDFRef {
       paint(path(pts, false), false);
       ending(m.lineEnds?.[0], pts[1], pts[0]);
       ending(m.lineEnds?.[1], pts[pts.length - 2], pts[pts.length - 1]);
+      // A Revu length drawn again (vertex moved): its value above the middle of the line
+      const encoded = m.isRevuMeasurement && m.contents ? encode(font, m.contents) : null;
+      if (encoded) {
+        const size = 10;
+        const mid = Math.floor((pts.length - 1) / 2);
+        const p0 = pts[mid], p1 = pts[mid + 1];
+        const width = safeWidth(font, m.contents, size);
+        ops.push('q /GS0 gs BT', `/Helv ${size} Tf ${r} ${g} ${b} rg`,
+          `1 0 0 1 ${num((p0.x + p1.x) / 2 - width / 2)} ${num((p0.y + p1.y) / 2 + 3)} Tm ${encoded} Tj`, 'ET Q');
+      }
       break;
     }
     case 'Ink':

@@ -1,10 +1,10 @@
 import { Injectable, computed, signal } from '@angular/core';
-import { PDFDict, PDFDocument, PDFName, PDFPage, degrees as pdfDegrees } from 'pdf-lib';
+import { PDFDict, PDFDocument, PDFHexString, PDFName, PDFPage, degrees as pdfDegrees } from 'pdf-lib';
 import type { PDFRef } from 'pdf-lib';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { Markup, Measurement, PlanElement } from '../../models/elements';
 import {
-  AREA_UNITS, COLORS, LENGTH_UNITS, LengthUnit, LineStyle, Pt, Rect, ScaleViewport, TakeoffItem, TakeoffKind,
+  AREA_UNITS, COLORS, boundsOf, LENGTH_UNITS, LengthUnit, LineStyle, Pt, Rect, ScaleViewport, TakeoffItem, TakeoffKind,
   isArchitecturalScale, kindTitle, kindUnit, netPolygonArea, pointInPolygon, polygonArea, polylineLength, quantityText, rectContains,
   scaleName, uid,
 } from '../../models/takeoff';
@@ -281,6 +281,13 @@ export class DrawingStore {
 
   // MARK: - Open a drawing
   async open(bytes: Uint8Array, name: string, handle: FileSystemFileHandle | null): Promise<void> {
+    // A file that is already open: show its tab
+    const same = this.tabs.find(t => t.name === name);
+    if (same) {
+      if (!same.active) this.switchTab(same.id);
+      this.showToast(`${name} is already open`);
+      return;
+    }
     this.loading = true;
     this.touch();
     try {
@@ -289,8 +296,10 @@ export class DrawingStore {
         Array.from({ length: renderer.numPages }, (_, i) => renderer.getPage(i + 1).then(p => new PageGeometry(p))));
       const labels = await renderer.getPageLabels().catch(() => null);
 
-      this.renderer?.destroy();
-      this.destroyExtraRenderers();
+      // The open document stays in its tab
+      if (this.hasDocument) this.parkActive();
+      this.tabOrder.push(this.activeTab = uid());
+      this.paneDocs[this.splitMode === 'single' ? 0 : this.activePane] = this.activeTab;
       this.pagesChanged = false;
       this.overlay.set(null);
       this.snapshotMode = 'none';
@@ -301,6 +310,7 @@ export class DrawingStore {
       this.pageLabels = labels ?? [];
       this.fileName = name;
       this.fileHandle = handle;
+      this.documentId = uid();
       this.pageIndexes = [0, 0];
       this.history.forEach(h => { h.back = []; h.forward = []; });
       this.measurements = [];
@@ -332,7 +342,11 @@ export class DrawingStore {
   // MARK: - Close the drawing
   // Leaves the app empty, as when it starts (changes not saved are lost)
   closeDocument(): void {
-    if (!this.hasDocument) return;
+    if (this.hasDocument) this.closeTab(this.activeTab);
+  }
+
+  // Leaves the app empty (the active tab's document is destroyed)
+  private resetDocument(): void {
     this.renderer?.destroy();
     this.destroyExtraRenderers();
     this.pagesChanged = false;
@@ -370,7 +384,164 @@ export class DrawingStore {
     this.columnsOpen = false;
     this.splitMode = 'single';
     this.activePane = 0;
+    this.extraPages = new Set();
+    this.extraEstimateKeys = new Set();
+    this.extractOpen = false;
     this.touch();
+  }
+
+  // MARK: - Tabs (several documents open, one shown at a time)
+  // The active document lives in the store's fields; the others are parked with their own state
+  private tabOrder: string[] = [];
+  private activeTab = '';
+  private parked = new Map<string, Record<string, unknown>>();
+  private static readonly DOC_FIELDS = [
+    'lib', 'renderer', 'pages', 'fileName', 'fileHandle', 'pageNames', 'pageLabels', 'extraRenderers', 'pagesChanged',
+    'measurements', 'markups', 'removed', 'pageScales', 'viewports', 'countSession', 'snapIndexes',
+    'pageIndexes', 'history', 'selection', 'extraPages', 'extraPagesOf', 'pageAnchor',
+    'undoStack', 'redoStack', 'lastCheckpoint', 'documentId', 'estimate', 'selectedEstimateKey', 'extraEstimateKeys',
+  ] as const;
+
+  get tabs(): { id: string; name: string; active: boolean; edited: boolean }[] {
+    return this.tabOrder.map(id => {
+      const state = id === this.activeTab ? (this as unknown as Record<string, unknown>) : this.parked.get(id)!;
+      return {
+        id, active: id === this.activeTab,
+        name: String(state['fileName'] ?? ''),
+        edited: ((state['undoStack'] as unknown[]) ?? []).length > 0,
+      };
+    });
+  }
+
+  // Moves the active document out of the store's fields (they get fresh containers)
+  private parkActive(): void {
+    this.finishCurrentMeasurement();
+    this.selectedItemId = null;
+    this.continuingTemplate = null;
+    this.continuedGroupName = null;
+    this.scaleRequest = null;
+    this.drawingViewport = false;
+    this.snapshotMode = 'none';
+    this.overlay.set(null);
+    this.insertRequest = null;
+    this.extractOpen = false;
+    this.batchRotateOpen = false;
+    this.pitchOpen = false;
+    this.propertiesKey = null;
+    this.columnsOpen = false;
+    const self = this as unknown as Record<string, unknown>;
+    const state: Record<string, unknown> = {};
+    for (const f of DrawingStore.DOC_FIELDS) state[f] = self[f];
+    this.parked.set(this.activeTab, state);
+    this.snapIndexes = new Map();
+    this.history = [{ back: [], forward: [] }, { back: [], forward: [] }];
+    this.extraRenderers = [];
+    this.extraPages = new Set();
+    this.extraEstimateKeys = new Set();
+    this.lib = null;
+    this.renderer = null;
+  }
+
+  private restoreTab(id: string): void {
+    const state = this.parked.get(id);
+    if (!state) return;
+    this.parked.delete(id);
+    Object.assign(this, state);
+    this.activeTab = id;
+    this.geometry.update(n => n + 1);
+    this.touch();
+  }
+
+  // A tab picked in the title bar goes to the active view (the other view keeps its document)
+  switchTab(id: string): void {
+    if (this.splitMode === 'single') {
+      this.paneDocs[0] = id;
+      this.showDocument(id);
+      return;
+    }
+    const pane = this.activePane, other = 1 - pane;
+    const fresh = this.paneDocs[pane] !== id && this.paneDocs[other] !== id;
+    this.paneDocs[pane] = id;
+    this.showDocument(id);
+    // A document new to the split shows its current page in this view
+    if (fresh) this.pageIndexes[pane] = this.pageIndexes[other];
+    this.touch();
+  }
+
+  // Makes a tab the active document (the one the tools, the tree and the panels work on)
+  private showDocument(id: string): void {
+    if (id === this.activeTab || !this.parked.has(id)) return;
+    this.parkActive();
+    this.restoreTab(id);
+  }
+
+  // MARK: - Documents of the views
+  // Each view can show a page of another open document. The active view's document is the active
+  // one; the other view draws its document's pages and elements from its parked state.
+  paneDocs = ['', ''];
+  private views = new WeakMap<Record<string, unknown>, DrawingStore>();
+
+  docView(pane: number): DrawingStore {
+    if (this.splitMode === 'single' && pane === 0) return this;
+    const id = this.paneDocs[pane];
+    const state = id && id !== this.activeTab ? this.parked.get(id) : undefined;
+    if (!state) return this;
+    let view = this.views.get(state);
+    if (!view) {
+      // Reads go to the parked document, everything else to the store
+      view = Object.assign(Object.create(this) as DrawingStore, state, { selection: [] });
+      this.views.set(state, view);
+    }
+    return view;
+  }
+
+  paneDocId(pane: number): string {
+    return (this.splitMode !== 'single' && this.paneDocs[pane]) || this.activeTab;
+  }
+
+  // Document chosen in a view's bar
+  setPaneDoc(pane: number, id: string): void {
+    this.activate(pane);
+    this.switchTab(id);
+  }
+
+  // Closes a tab (changes not saved are lost); the next tab (or the previous one) becomes active
+  closeTab(id: string): void {
+    const at = this.tabOrder.indexOf(id);
+    if (at < 0) return;
+    this.tabOrder.splice(at, 1);
+    if (id !== this.activeTab) {
+      const state = this.parked.get(id);
+      this.parked.delete(id);
+      (state?.['renderer'] as PDFDocumentProxy | null)?.destroy();
+      ((state?.['extraRenderers'] as PDFDocumentProxy[]) ?? []).forEach(r => r.destroy());
+      this.paneDocs = this.paneDocs.map(d => d === id ? this.activeTab : d);
+      this.touch();
+      return;
+    }
+    const split = this.splitMode, pane = this.activePane;
+    // A view showing another document keeps it and becomes the active one
+    const otherDoc = split !== 'single' ? this.paneDocs[1 - pane] : '';
+    const next = otherDoc && otherDoc !== id ? otherDoc : this.tabOrder[Math.min(at, this.tabOrder.length - 1)];
+    this.resetDocument();
+    if (next) {
+      this.restoreTab(next);
+      this.splitMode = split;
+      this.activePane = otherDoc && otherDoc !== id ? 1 - pane : pane;
+      this.paneDocs = this.paneDocs.map(d => d === id || !this.tabOrder.includes(d) ? next : d);
+      this.touch();
+    } else {
+      this.activeTab = '';
+      this.paneDocs = ['', ''];
+    }
+  }
+
+  // Ctrl+Tab / Ctrl+Shift+Tab
+  nextTab(step: number): void {
+    const n = this.tabOrder.length;
+    if (n < 2) return;
+    const at = this.tabOrder.indexOf(this.activeTab);
+    this.switchTab(this.tabOrder[(at + step + n) % n]);
   }
 
   // MARK: - Undo / Redo (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z)
@@ -432,10 +603,10 @@ export class DrawingStore {
     for (const [m, state] of snap.markups) {
       const record = m as unknown as Record<string, unknown>;
       const changed = !present.has(m) || MARKUP_FIELDS.some(k => record[k] !== state[k]);
-      const holes = record['cutouts'] !== state['cutouts'];
+      const holes = ['cutouts', 'vertices', 'line'].some(k => record[k] !== state[k]);
       Object.assign(m, state);
       if (changed) m.dirty = true;                     // written again on the next save
-      if (holes) m.cutoutsChanged = true;              // its picture in the PDF is drawn again
+      if (holes) m.redrawAppearance = true;              // its picture in the PDF is drawn again
     }
     this.measurements = snap.measurements.map(([m]) => m);
     this.markups = snap.markups.map(([m]) => m);
@@ -483,13 +654,24 @@ export class DrawingStore {
   private get paneApi(): PaneApi | undefined { return this.paneApis.get(this.activePane); }
 
   activate(pane: number): void {
+    // A view with another document: that document becomes the active one
+    const doc = this.splitMode !== 'single' ? this.paneDocs[pane] : '';
+    if (doc && doc !== this.activeTab) this.showDocument(doc);
     if (this.activePane === pane) return;
     this.activePane = pane;
     this.touch();
   }
 
   setSplit(mode: SplitMode): void {
-    if (mode !== 'single' && this.splitMode === 'single') this.pageIndexes[1] = this.pageIndexes[0];
+    if (mode !== 'single' && this.splitMode === 'single') {
+      this.pageIndexes[1] = this.pageIndexes[0];
+      this.paneDocs = [this.activeTab, this.activeTab];
+    }
+    // Back to one view: it shows the active document (its page in the active view)
+    if (mode === 'single' && this.splitMode !== 'single') {
+      if (this.activePane === 1 && this.paneDocs[0] !== this.paneDocs[1]) this.pageIndexes[0] = this.pageIndexes[1];
+      this.paneDocs = [this.activeTab, this.activeTab];
+    }
     this.splitMode = mode;
     if (mode === 'single') this.activePane = 0;
     this.touch();
@@ -497,8 +679,13 @@ export class DrawingStore {
 
   // Closes a pane; the other one becomes the only view
   closePane(index: number): void {
+    const other = 1 - index;
+    if (this.paneDocs[other] && this.paneDocs[other] !== this.activeTab) this.showDocument(this.paneDocs[other]);
     if (index === 0) this.pageIndexes[0] = this.pageIndexes[1];   // the second pane becomes the only one
-    this.setSplit('single');
+    this.activePane = 0;
+    this.paneDocs = [this.activeTab, this.activeTab];
+    this.splitMode = 'single';
+    this.touch();
   }
 
   // MARK: - Page names
@@ -685,6 +872,50 @@ export class DrawingStore {
   firstPage(): void { this.goTo(0); }
   lastPage(): void { this.goTo(this.pageCount - 1); }
 
+  // MARK: - Selected pages (Pages panel and page rows of the tree: Ctrl/⌘ + click, Shift + click)
+  // The current page is always one of them. A new page list starts over.
+  private extraPages = new Set<number>();
+  private extraPagesOf: unknown = null;
+  private pageAnchor: number | null = null;
+
+  get selectedPages(): number[] {
+    const extra = this.extraPagesOf === this.pages ? this.extraPages : new Set<number>();
+    return [...new Set([this.currentPageIndex, ...extra])].filter(i => i < this.pageCount).sort((a, b) => a - b);
+  }
+
+  setSelectedPages(list: Iterable<number>): void {
+    this.extraPages = new Set(list);
+    this.extraPagesOf = this.pages;
+    this.touch();
+  }
+
+  clickPage(index: number, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }): void {
+    if (e.shiftKey) {
+      const from = this.pageAnchor ?? this.currentPageIndex;
+      const range: number[] = [];
+      for (let i = Math.min(from, index); i <= Math.max(from, index); i++) range.push(i);
+      this.setSelectedPages(range);
+      this.goTo(index);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      const set = new Set(this.selectedPages);
+      if (set.has(index) && set.size > 1) {
+        set.delete(index);
+        if (index === this.currentPageIndex) this.goTo([...set][0]);
+      } else {
+        set.add(index);
+        this.goTo(index);
+      }
+      this.setSelectedPages(set);
+      this.pageAnchor = index;
+      return;
+    }
+    this.setSelectedPages([]);
+    this.pageAnchor = index;
+    this.goTo(index);
+  }
+
   goTo(pageIndex: number, pane = this.activePane): void {
     if (pageIndex < 0 || pageIndex >= this.pageCount || pageIndex === this.pageIndexes[pane]) return;
     const h = this.history[pane];
@@ -831,6 +1062,127 @@ export class DrawingStore {
     this.moving = false;
     this.selection.forEach(el => { if (el instanceof Measurement) this.updateCaption(el); });
     this.touch();
+  }
+
+  // MARK: - Vertices (drag the squares of the selected line or area)
+  // The points that can be dragged: lines and areas measured in the app, and PDF polygons,
+  // polylines and lines (Revu measurements included). Counts and other shapes have none.
+  editableVertices(el: PlanElement): Pt[] | null {
+    if (el instanceof Measurement) return el.kind !== 'count' && el.points.length >= 2 ? el.points : null;
+    if (el.isRevuMeasurement && /Count/.test(el.intent)) return null;
+    if ((el.subtype === 'Polygon' || el.subtype === 'PolyLine') && el.vertices && el.vertices.length >= 2) return el.vertices;
+    if (el.subtype === 'Line' && el.line && el.line.length === 2) return el.line;
+    return null;
+  }
+
+  // Value and text of a Revu measurement when the drag starts (its /Contents follows the new shape)
+  private vertexStart: { el: Markup; geometry: number; contents: string } | null = null;
+
+  beginVertexEdit(el: PlanElement): void {
+    this.checkpoint();
+    this.vertexStart = el instanceof Markup ? { el, geometry: markupGeometry(el), contents: el.contents } : null;
+  }
+
+  moveVertex(el: PlanElement, index: number, point: Pt): void {
+    const set = (list: Pt[]) => list.map((p, i) => i === index ? { ...point } : p);
+    if (el instanceof Measurement) {
+      el.points = set(el.points);
+      this.updateCaption(el);
+    } else {
+      if (el.subtype === 'Line' && el.line) el.line = set(el.line);
+      else if (el.vertices) el.vertices = set(el.vertices);
+      const pts = el.line && el.subtype === 'Line' ? el.line : el.vertices ?? [];
+      el.rect = boundsOf(pts, Math.max(el.lineWidth, 1) + 14);   // room for the value text
+      el.dirty = true;
+      el.redrawAppearance = true;
+      const start = this.vertexStart;
+      if (start && start.el === el && el.isRevuMeasurement && start.geometry > 0) {
+        el.contents = scaleQuantityText(start.contents, markupGeometry(el) / start.geometry);
+      }
+    }
+    this.geometry.update(v => v + 1);                  // only the plan redraws while dragging
+  }
+
+  finishVertexEdit(): void {
+    this.vertexStart = null;
+    this.touch();
+  }
+
+  // MARK: - Copy / Paste (Ctrl+C / Ctrl+V) of measurements and markups
+  private clipboard: { elements: PlanElement[]; documentId: string; pastes: number } | null = null;
+  clipboardKind: 'elements' | 'snapshot' | null = null;   // what Ctrl+V pastes (the last thing copied)
+  documentId = uid();                                      // a new one for every document opened
+
+  get canPaste(): boolean { return !!this.clipboard?.elements.length; }
+
+  copySelection(): boolean {
+    const list = this.selection.filter(el => el instanceof Measurement || el instanceof Markup);
+    if (!list.length) return false;
+    this.clipboard = { elements: [...list], documentId: this.documentId, pastes: 0 };
+    this.clipboardKind = 'elements';
+    this.showToast(`Copied ${list.length} element${list.length === 1 ? '' : 's'}`);
+    return true;
+  }
+
+  // Pastes the copied elements on the page: centered on `at` (the cursor) when given, otherwise
+  // a little below and to the right of the originals each time
+  pasteElements(pageIndex: number, at: Pt | null): void {
+    const clip = this.clipboard;
+    if (!clip || !this.hasDocument || !this.pages[pageIndex]) return;
+    const sameDocument = clip.documentId === this.documentId;
+    // A markup read from another PDF can't be copied into this one (its object lives in that file)
+    const sources = clip.elements.filter(el => el instanceof Measurement || sameDocument || el.appMade);
+    if (!sources.length) {
+      this.showToast("Markups from another PDF can't be pasted here; measurements can.", true);
+      return;
+    }
+    const boxes = sources.map(el => el.bounds);
+    const minX = Math.min(...boxes.map(b => b.x)), minY = Math.min(...boxes.map(b => b.y));
+    const maxX = Math.max(...boxes.map(b => b.x + b.w)), maxY = Math.max(...boxes.map(b => b.y + b.h));
+    clip.pastes++;
+    const step = 12 * clip.pastes;
+    const dx = at ? at.x - (minX + maxX) / 2 : step;
+    const dy = at ? at.y - (minY + maxY) / 2 : -step;           // page y goes up: below = minus
+    this.checkpoint();
+    const pasted: PlanElement[] = [];
+    for (const el of sources) {
+      if (el instanceof Measurement) {
+        const item = this.pasteItemFor(el);
+        if (!item) continue;
+        const m = new Measurement(el.kind, pageIndex, item.id);
+        const { id: _id, nm: _nm, pdfRef: _ref, createdAt: _created, itemId: _item, pageIndex: _page, ...style } = el as unknown as Record<string, unknown>;
+        Object.assign(m, style);
+        m.points = el.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
+        m.cutouts = el.cutouts.map(h => h.map(p => ({ x: p.x + dx, y: p.y + dy })));
+        m.visible = true;
+        this.updateCaption(m);
+        this.measurements.push(m);
+        pasted.push(m);
+      } else {
+        const b = el.bounds;
+        const copy = el.copy({ x: b.x + b.w / 2 + dx, y: b.y + b.h / 2 + dy });
+        copy.pageIndex = pageIndex;
+        this.markups.push(copy);
+        pasted.push(copy);
+      }
+    }
+    this.selection = pasted;
+    this.touch();
+  }
+
+  // The element a pasted measurement belongs to: the same one, or one with its name and type
+  // (pasting into another document), created when missing
+  private pasteItemFor(m: Measurement): TakeoffItem | null {
+    const own = this.items.find(i => i.id === m.itemId);
+    if (own) return own;
+    const name = m.name || kindTitle(m.kind);
+    const same = this.items.find(i => i.name === name && i.kind === m.kind);
+    if (same) return same;
+    this.addItem(name, m.kind, m.lineColor);
+    const added = this.items[this.items.length - 1];
+    this.cancelTool();                                       // addItem starts measuring with it
+    if (m.fillColor) added.fillColor = m.fillColor;
+    return added;
   }
 
   deleteSelected(): void {
@@ -1367,6 +1719,7 @@ export class DrawingStore {
       m.lengthUnit = this.unitFor(item.kind);
       m.arrowEnds = item.name === 'Dimension';       // Dimension: arrows on both ends
       m.visible = item.isVisible;
+      this.applyLastStyle(m, item);
       this.measurements.push(m);
       this.current = m;
     }
@@ -1381,6 +1734,37 @@ export class DrawingStore {
     // Segment: every two clicks is a separate line
     if (item.kind === 'segment' && m.points.length === 2) this.current = null;
     this.touch();
+  }
+
+  // Continuing an element keeps its look: the style of its last measurement (the last one
+  // configured), or of its last PDF markup (a Revu line or area continued from the tree)
+  private applyLastStyle(m: Measurement, item: TakeoffItem): void {
+    const last = [...this.measurements].reverse().find(x => x.itemId === item.id && x.kind === m.kind);
+    if (last) {
+      m.lineColor = last.lineColor;
+      m.opacity = last.opacity;
+      m.fillOpacity = last.fillOpacity;
+      m.fillColor = last.fillColor;
+      m.lineWidth = last.lineWidth;
+      m.lineStyle = last.lineStyle;
+      m.showCaption = last.showCaption;
+      m.captionFontName = last.captionFontName;
+      m.captionFontSize = last.captionFontSize;
+      m.captionColor = last.captionColor;
+      m.captionBold = last.captionBold;
+      m.captionItalic = last.captionItalic;
+      m.lengthUnit = last.lengthUnit;
+      m.arrowEnds = last.arrowEnds;
+      return;
+    }
+    const markup = [...this.markups].reverse().find(x => x.name === item.name && DrawingStore.takeoffKind(x) === (m.kind === 'segment' ? 'length' : m.kind));
+    if (!markup) return;
+    if (markup.color) m.lineColor = markup.color;
+    m.opacity = markup.opacity;
+    if (markup.fillColor) m.fillColor = markup.fillColor;
+    if (markup.fillOpacity !== null) m.fillOpacity = markup.fillOpacity;
+    if (markup.lineWidth > 0) m.lineWidth = markup.lineWidth;
+    m.lineStyle = markup.dashed ? 'Dashed' : 'Solid';
   }
 
   // MARK: - Top bar (Area, Linear, Segment, Count, Dimension)
@@ -1532,17 +1916,9 @@ export class DrawingStore {
     const before = netPolygonArea(outline, el.cutouts);
     const after = netPolygonArea(outline, holes);
     el.cutouts = holes;
-    el.cutoutsChanged = true;
+    el.redrawAppearance = true;
     el.dirty = true;
-    const match = /^(\s*)([0-9][0-9,]*\.?([0-9]*))(.*)$/s.exec(el.contents);
-    if (match && before > 0) {
-      const value = Number(match[2].replace(/,/g, '')) * after / before;
-      const decimals = match[3].length;
-      const text = match[2].includes(',')
-        ? value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
-        : value.toFixed(decimals);
-      el.contents = match[1] + text + match[4];
-    }
+    if (before > 0) el.contents = scaleQuantityText(el.contents, after / before);
   }
 
   // Quantity in ft / sf, with the scale where the measurement starts (viewport or page)
@@ -1662,6 +2038,75 @@ export class DrawingStore {
     const turn = degrees === 180 || degrees === -180 ? '180°' : degrees > 0 ? 'right' : 'left';
     this.showToast(list.length === 1 ? `${this.pageName(list[0])} rotated ${turn}` : `${list.length} pages rotated ${turn}`);
     this.touch();
+  }
+
+  // MARK: - Extract Pages: the chosen pages (with markups and measurements) into a new PDF
+  extractOpen = false;
+  openExtract(): void { if (this.hasDocument) { this.extractOpen = true; this.touch(); } }
+  closeExtract(): void { this.extractOpen = false; this.touch(); }
+
+  // false when nothing was saved (cancelled)
+  async extractPages(indexes: number[], separate: boolean, deleteAfter: boolean): Promise<boolean> {
+    if (!this.lib || !indexes.length) return false;
+    this.finishCurrentMeasurement();
+    const pages = [...indexes].sort((a, b) => a - b);
+    const base = (this.fileName || 'Document').replace(/\.pdf$/i, '');
+    const safe = (text: string) => text.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Page';
+    // Groups of pages, one PDF each
+    const groups = separate ? pages.map(i => [i]) : [pages];
+    const fileNames = groups.map(g => g.length === 1 ? `${base} - ${safe(this.pageName(g[0]))}.pdf` : `${base} - Extracted.pdf`);
+    const unique = fileNames.map((n, i) => fileNames.indexOf(n) === i ? n : n.replace(/\.pdf$/, ` (${pages[i] + 1}).pdf`));
+
+    // Where to save: one file → Save As window; several → a folder (or downloads)
+    type Picker = (o: object) => Promise<FileSystemFileHandle>;
+    type DirPicker = (o?: object) => Promise<FileSystemDirectoryHandle>;
+    const w = window as unknown as { showSaveFilePicker?: Picker; showDirectoryPicker?: DirPicker };
+    let fileHandle: FileSystemFileHandle | null = null;
+    let folder: FileSystemDirectoryHandle | null = null;
+    try {
+      if (groups.length === 1 && w.showSaveFilePicker) {
+        fileHandle = await w.showSaveFilePicker({ suggestedName: unique[0], types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }] });
+      } else if (groups.length > 1 && w.showDirectoryPicker) {
+        folder = await w.showDirectoryPicker({ mode: 'readwrite' });
+      }
+    } catch {
+      return false;                                             // cancelled
+    }
+
+    try {
+      // The document as it would be saved (measurements written as Revu markups), then its pages copied
+      const source = await PDFDocument.load(await this.write(), { ignoreEncryption: true });
+      for (const [k, group] of groups.entries()) {
+        const out = await PDFDocument.create();
+        const copied = await out.copyPages(source, group);
+        copied.forEach(p => out.addPage(p));
+        // Page names go along as page labels (Revu and CadrafterPro show them as the page names)
+        const nums: unknown[] = [];
+        group.forEach((index, i) => nums.push(i, { P: PDFHexString.fromText(this.pageName(index)) }));
+        out.catalog.set(PDFName.of('PageLabels'), out.context.obj({ Nums: nums } as never));
+        const bytes = await out.save({ useObjectStreams: false });
+        if (fileHandle) {
+          const writable = await fileHandle.createWritable();
+          await writable.write(bytes as BlobPart);
+          await writable.close();
+        } else if (folder) {
+          const handle = await folder.getFileHandle(unique[k], { create: true });
+          const writable = await handle.createWritable();
+          await writable.write(bytes as BlobPart);
+          await writable.close();
+        } else {
+          downloadFile(new Blob([bytes as BlobPart], { type: 'application/pdf' }), unique[k]);
+        }
+      }
+    } catch (error) {
+      console.error(error);
+      this.showToast("Couldn't extract the pages", true);
+      return false;
+    }
+    const what = groups.length === 1 ? (fileHandle?.name ?? unique[0]) : `${groups.length} files`;
+    if (deleteAfter && pages.length < this.pageCount) this.deletePages(pages);
+    this.showToast(`Extracted ${pages.length} page${pages.length === 1 ? '' : 's'} to ${what}`);
+    return true;
   }
 
   batchRotateOpen = false;                         // Batch Rotate Pages window on screen
@@ -1876,6 +2321,7 @@ export class DrawingStore {
   // The plan copied the region: keep it for Paste
   setSnapshotClip(clip: SnapshotClip): void {
     this.snapshotClip = clip;
+    this.clipboardKind = 'snapshot';
     this.snapshotMode = 'none';
     this.showToast('Snapshot copied. Go to any page and press Paste (Ctrl+V)');
   }
@@ -2656,6 +3102,25 @@ export function estimateQuantityText(row: EstimateRow): string {
 
 // Revu writes the measured value in /Contents ("154.09 sf", "52.82 ft").
 // If every markup has a value with the same unit, add them up; otherwise count them.
+// Size of a PDF markup's shape: area of a polygon (without its holes), length of a line
+function markupGeometry(m: Markup): number {
+  if (m.subtype === 'Polygon' && m.vertices) return netPolygonArea(m.vertices, m.cutouts);
+  const pts = m.subtype === 'Line' ? m.line : m.vertices;
+  return pts ? polylineLength(pts) : 0;
+}
+
+// "154.09 sf" × ratio → "169.50 sf" (same decimals, thousands separator and unit)
+function scaleQuantityText(text: string, ratio: number): string {
+  const match = /^(\s*)([0-9][0-9,]*\.?([0-9]*))(.*)$/s.exec(text);
+  if (!match || !Number.isFinite(ratio)) return text;
+  const value = Number(match[2].replace(/,/g, '')) * ratio;
+  const decimals = match[3].length;
+  const out = match[2].includes(',')
+    ? value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+    : value.toFixed(decimals);
+  return match[1] + out + match[4];
+}
+
 // A Revu area measurement read from the PDF (a polygon with a value)
 export function isRevuArea(el: PlanElement): el is Markup {
   return el instanceof Markup && el.subtype === 'Polygon' && /PolygonDimension/.test(el.intent) && (el.vertices?.length ?? 0) >= 3;

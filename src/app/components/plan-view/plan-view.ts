@@ -11,7 +11,7 @@ import { captureSnapshot } from '../../services/snapshot/snapshot';
 import { OcrService } from '../../services/ocr/ocr';
 import { PageLabeler } from '../../services/page-labels/page-labels';
 import { MarkupTools } from '../../services/markup-tools/markup-tools';
-import { Shape, TEXT_FONT, markupShapes, pageShapes, pathOf, rectPath, viewportShapes } from '../../services/shapes/shapes';
+import { Shape, TEXT_FONT, VERTEX_HANDLE, markupShapes, pageShapes, pathOf, rectPath, viewportShapes } from '../../services/shapes/shapes';
 import { TextSearch } from '../../services/text-search/text-search';
 import { TextSelect } from '../../services/text-select/text-select';
 import { CalcTools } from '../../services/calc-tools/calc-tools';
@@ -20,7 +20,7 @@ import { OverlayPanel } from '../overlay-panel/overlay-panel';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
 const MIN_ZOOM = 0.05;
-type DragMode = 'pan' | 'move' | 'marquee' | 'viewport' | 'ocr' | 'snapshot' | 'overlay' | 'overlayScale' | 'overlayRotate'
+type DragMode = 'pan' | 'move' | 'vertex' | 'marquee' | 'viewport' | 'ocr' | 'snapshot' | 'overlay' | 'overlayScale' | 'overlayRotate'
   | 'markup' | 'labels' | 'text';
 const MAX_ZOOM = 40;
 const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7 M pixels
@@ -42,7 +42,7 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
   `],
   template: `
     <div #host class="plan-host" [style.cursor]="cursor()"
-         (mousedown)="onMouseDown($event)" (mousemove)="onHover($event)" (mouseleave)="hover.set(null)"
+         (mousedown)="onMouseDown($event)" (mousemove)="onHover($event)" (mouseleave)="hover.set(null); lastMousePage = null"
          (dblclick)="onDoubleClick($event)"
          (contextmenu)="$event.preventDefault()">
       @if (geometry(); as g) {
@@ -139,13 +139,19 @@ export class PlanView implements OnDestroy {
   // Selection or viewport box being dragged (view coordinates)
   private readonly marquee = signal<Rect | null>(null);
 
-  readonly pageIndex = computed(() => this.store.watch().pageIndexes[this.pane()]);
-  readonly geometry = computed(() => this.store.watch().pages[this.pageIndex()] ?? null);
+  // Document shown in this view: the active one, or another open document (drawn only;
+  // a click makes it the active one)
+  readonly doc = computed(() => this.store.watch().docView(this.pane()), { equal: () => false });
+  readonly foreign = computed(() => this.doc() !== this.store);   // (a plain boolean: changes only when it flips)
+  readonly pageIndex = computed(() => this.doc().pageIndexes[this.pane()]);
+  readonly geometry = computed(() => this.doc().pages[this.pageIndex()] ?? null);
+  // Page for the tools and live layers: none while the view shows another document
+  private readonly liveGeometry = computed(() => this.foreign() ? null : this.geometry());
 
   // Overlay drawn on this pane (only on its base page) and the page on top
   readonly overlayHere = computed<OverlayState | null>(() => {
     const o = this.store.overlay();
-    return o && o.baseIndex === this.pageIndex() ? o : null;
+    return o && !this.foreign() && o.baseIndex === this.pageIndex() ? o : null;
   });
   readonly overlaySource = computed<PageGeometry | null>(() => {
     const o = this.overlayHere();
@@ -245,13 +251,13 @@ export class PlanView implements OnDestroy {
     const s = this.store.watch();
     this.store.geometry();
     const g = this.geometry();
-    return g ? pageShapes(s, this.pageIndex(), g, this.zoom()) : [];
+    return g ? pageShapes(this.doc(), this.pageIndex(), g, this.zoom(), !this.foreign()) : [];
   });
 
   // OCR: recognized words (soft yellow) and the word picked in the OCR panel (orange frame)
   readonly ocrShapes = computed<Shape[]>(() => {
     this.store.watch();
-    const g = this.geometry();
+    const g = this.liveGeometry();
     if (!g) return [];
     const px = 1 / this.zoom();
     const shapes: Shape[] = [];
@@ -273,7 +279,7 @@ export class PlanView implements OnDestroy {
   // Live layer: measurement in progress, line to the cursor, snap marker, quantity label, marquee
   readonly liveShapes = computed<Shape[]>(() => {
     const s = this.store.watch();
-    const g = this.geometry();
+    const g = this.liveGeometry();
     if (!g) return [];
     const px = 1 / this.zoom();
     const shapes: Shape[] = [];
@@ -345,7 +351,7 @@ export class PlanView implements OnDestroy {
 
   // Search results on this page (the one picked in the panel is stronger)
   readonly searchShapes = computed<Shape[]>(() => {
-    const g = this.geometry();
+    const g = this.liveGeometry();
     const focused = this.search.focused();
     if (!g) return [];
     const px = 1 / this.zoom();
@@ -365,7 +371,7 @@ export class PlanView implements OnDestroy {
 
   // Select Text: the selected words on this page
   readonly textShapes = computed<Shape[]>(() => {
-    const g = this.geometry();
+    const g = this.liveGeometry();
     const sel = this.textSelect.selection();
     if (!g || !sel || sel.pageIndex !== this.pageIndex()) return [];
     return sel.words.map(w => {
@@ -378,7 +384,7 @@ export class PlanView implements OnDestroy {
   // Pitch lines and triangles measured with the Calculation tools (yellow labels like PlanSwift)
   readonly calcShapes = computed<Shape[]>(() => {
     this.store.watch();
-    const g = this.geometry();
+    const g = this.liveGeometry();
     if (!g) return [];
     const px = 1 / this.zoom();
     const shapes: Shape[] = [];
@@ -430,7 +436,7 @@ export class PlanView implements OnDestroy {
   // Cut Out in progress: the corners so far, the line to the cursor and back to the first corner
   readonly cutoutShapes = computed<Shape[]>(() => {
     const now = this.cutout.current();
-    const g = this.geometry();
+    const g = this.liveGeometry();
     if (!this.cutout.active() || !g || !now || now.pageIndex !== this.pageIndex()) return [];
     const px = 1 / Math.max(this.zoom(), 0.01);
     const hover = this.hover();
@@ -452,7 +458,7 @@ export class PlanView implements OnDestroy {
 
   // "Apply …/12" next to the last pitch measured on this page
   readonly pitchButton = computed<(Pt & { pitch: number }) | null>(() => {
-    const g = this.geometry();
+    const g = this.liveGeometry();
     if (!g || !this.calc.mode()) return null;
     const last = [...this.calc.items()].reverse().find(i => i.kind === 'pitch' && i.page === g);
     if (!last) return null;
@@ -464,7 +470,7 @@ export class PlanView implements OnDestroy {
 
   // Copy button under the last selected word (screen position in the pane)
   readonly copyButton = computed<Pt | null>(() => {
-    const g = this.geometry();
+    const g = this.liveGeometry();
     const sel = this.textSelect.selection();
     if (!g || !sel || sel.pageIndex !== this.pageIndex() || !this.textSelect.active()) return null;
     const last = sel.words[sel.words.length - 1];
@@ -478,7 +484,7 @@ export class PlanView implements OnDestroy {
   readonly markupPreview = computed<Shape[]>(() => {
     this.markups.styleVersion();
     const kind = this.markups.tool();
-    const g = this.geometry();
+    const g = this.liveGeometry();
     if (!kind || !g) return [];
     const px = 1 / this.zoom();
     const hover = this.hover();
@@ -509,7 +515,7 @@ export class PlanView implements OnDestroy {
     this.store.watch();
     this.store.geometry();
     const m = this.markups.editing();
-    const g = this.geometry();
+    const g = this.liveGeometry();
     if (!m || !g || m.pageIndex !== this.pageIndex() || this.store.activePane !== this.pane()) return null;
     const z = this.zoom();
     const r = g.rectToView(m.textRect);
@@ -763,7 +769,44 @@ export class PlanView implements OnDestroy {
     this.refreshHover(e);
   }
 
+  // Vertex being dragged (a square of the selected line or area)
+  private vertexDrag: { el: PlanElement; index: number; begun: boolean } | null = null;
+
+  // Where a dragged vertex goes: the nearest other vertex within 12 px (Snap), and with Ortho or
+  // Shift in a straight line from the previous vertex
+  private snapVertex(point: Pt, v: { el: PlanElement; index: number }, e: MouseEvent): Pt {
+    const s = this.store;
+    const own = s.editableVertices(v.el) ?? [];
+    let result = point;
+    if (s.snapEnabled) {
+      let best: Pt | null = null;
+      let bestDistance = 12 / Math.max(this.zoom(), 0.01);
+      const check = (p: Pt) => {
+        const d = Math.hypot(p.x - point.x, p.y - point.y);
+        if (d <= bestDistance) { bestDistance = d; best = p; }
+      };
+      for (const el of s.elementsOn(this.pageIndex())) {
+        if (!el.visible) continue;
+        const list = el instanceof Measurement ? el.points : el.vertices ?? [];
+        list.forEach((p, i) => { if (el !== v.el || i !== v.index) check(p); });
+      }
+      const fromDrawing = s.snapIndex(this.pageIndex())?.nearest(point, bestDistance);
+      result = fromDrawing ?? best ?? point;
+    }
+    const g = this.geometry();
+    const anchor = own[v.index - 1] ?? (own.length > 2 ? own[own.length - 1] : own[1]);
+    if ((s.orthoEnabled || e.shiftKey) && g && anchor) {
+      const a = g.toView(anchor), p = g.toView(result);
+      result = g.toPage(Math.abs(p.x - a.x) >= Math.abs(p.y - a.y) ? { x: p.x, y: a.y } : { x: a.x, y: p.y });
+    }
+    return result;
+  }
+
+  // Where the mouse is on this page (page coordinates), for Paste; null when it left the plan
+  lastMousePage: Pt | null = null;
+
   onHover(e: MouseEvent): void {
+    this.lastMousePage = this.pagePoint(e);
     if (this.drag) return;
     if (this.store.snapshotMode === 'place') this.ghost.set(this.viewPoint(this.screenPoint(e)));
     this.refreshHover(e);
@@ -771,7 +814,7 @@ export class PlanView implements OnDestroy {
 
   private refreshHover(e: MouseEvent): void {
     const s = this.store;
-    if (s.tool === 'none' && !this.markups.tool() && !this.calc.mode() && !this.cutout.active()) {
+    if (this.foreign() || (s.tool === 'none' && !this.markups.tool() && !this.calc.mode() && !this.cutout.active())) {
       if (this.hover()) this.hover.set(null);
       return;
     }
@@ -946,6 +989,21 @@ export class PlanView implements OnDestroy {
       return;
     }
 
+    // A square of the selected line or area: drag that vertex
+    if (s.interaction !== 'zoom' && s.selection.length === 1 && s.selection[0].pageIndex === this.pageIndex()) {
+      const el = s.selection[0];
+      const vertices = s.editableVertices(el);
+      const reach = (VERTEX_HANDLE / 2 + 2) / this.zoom();
+      const index = vertices ? vertices.findIndex(p => {
+        const v = g.toView(p);
+        return Math.abs(v.x - view.x) <= reach && Math.abs(v.y - view.y) <= reach;
+      }) : -1;
+      if (index >= 0) {
+        this.vertexDrag = { el, index, begun: false };
+        return start('vertex');
+      }
+    }
+
     // Shift or ⌘ + click = add to / remove from the selection
     const additive = e.shiftKey || e.metaKey;
     const element = s.elementAt(this.pageIndex(), page, 3 / this.zoom() + 3);
@@ -1035,6 +1093,18 @@ export class PlanView implements OnDestroy {
         d.lastPage = page;
         break;
       }
+      case 'vertex': {
+        const v = this.vertexDrag;
+        if (!v) break;
+        if (!v.begun) {
+          this.store.beginVertexEdit(v.el);              // one Undo step for the whole drag
+          v.begun = true;
+        }
+        // Snap to other vertices (not to itself) and Ortho from the neighbour
+        const target = this.snapVertex(g.toPage(view), v, e);
+        this.store.moveVertex(v.el, v.index, target);
+        break;
+      }
       case 'text':
         if (this.textSelect.startedOnWord) void this.textSelect.extend(g.toPage(view), 2 / this.zoom() + 1);
         else this.marquee.set(rectFromPoints(d.startView, view));
@@ -1094,6 +1164,10 @@ export class PlanView implements OnDestroy {
       case 'move':
         if (d.started) s.finishMove();
         break;
+      case 'vertex':
+        if (this.vertexDrag?.begun) s.finishVertexEdit();
+        this.vertexDrag = null;
+        break;
       case 'text':
         if (box && !this.textSelect.startedOnWord && box.w * this.zoom() > 3 && box.h * this.zoom() > 3) {
           void this.textSelect.selectBox(this.pageIndex(), g.rectToPage(box));
@@ -1145,8 +1219,21 @@ export class PlanView implements OnDestroy {
     const target = e.target as HTMLElement | null;
     if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
 
+    // Ctrl+C copies the selected measurements and markups; Ctrl+V pastes what was copied last
+    // (elements at the cursor, or the Snapshot region)
+    const command = e.ctrlKey || e.metaKey;
+    if (command && e.key.toLowerCase() === 'c' && !this.textSelect.active() && s.tool === 'none' && s.selection.length) {
+      if (s.copySelection()) e.preventDefault();
+      return;
+    }
+    if (command && e.key.toLowerCase() === 'v' && s.canPaste && (s.clipboardKind === 'elements' || !s.snapshotClip)) {
+      e.preventDefault();
+      if (s.tool !== 'none') s.cancelTool();
+      s.pasteElements(this.pageIndex(), this.lastMousePage);
+      return;
+    }
     // Snapshot: Ctrl+V / ⌘V pastes the copied region, Esc leaves the tool
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && s.snapshotClip) {
+    if (command && e.key.toLowerCase() === 'v' && s.snapshotClip) {
       e.preventDefault();
       s.pasteSnapshot();
       return;

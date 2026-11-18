@@ -294,6 +294,10 @@ import { Icon } from '../icon/icon';
                     title="Slip Sheet: replace the pages with the same name with the pages of another PDF (an addendum), keeping markups and measurements">
               <app-icon class="icon" [style.color]="colors.blue" name="restore_page" /><span>Slip Sheet</span>
             </button>
+            <button class="ribbon-button" [disabled]="!s.hasDocument" (click)="s.openExtract()"
+                    title="Extract Pages: save the selected pages (Ctrl/Shift + click in the tree or Pages panel) as a new PDF, with their markups">
+              <app-icon class="icon" [style.color]="colors.green" name="file_export" /><span>Extract</span>
+            </button>
             <button class="ribbon-button" title="Delete this page and what was measured on it (can't be undone)"
                     [disabled]="!s.hasDocument || s.pageCount < 2" (click)="deletePage()">
               <app-icon class="icon" [style.color]="colors.red" name="delete" /><span>Delete Page</span>

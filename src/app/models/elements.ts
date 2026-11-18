@@ -117,7 +117,7 @@ export class Markup {
   rect: Rect = { x: 0, y: 0, w: 0, h: 0 }; // /Rect
   vertices: Pt[] | null = null;            // /Vertices (Polygon, PolyLine)
   cutouts: Pt[][] = [];                    // holes of a Revu area (/CPCutouts, Cut Out tool)
-  cutoutsChanged = false;                  // its /AP is drawn again on save (with the holes)
+  redrawAppearance = false;                // its /AP is drawn again on save (new holes or vertices)
   line: Pt[] | null = null;                // /L (Line)
   inkList: Pt[][] | null = null;           // /InkList (Ink: Revu Pen and Highlight)
   multiply = false;                        // /BM /Multiply (Revu Highlight)
@@ -263,6 +263,8 @@ export class Markup {
     const dy = center.y - (this.rect.y + this.rect.h / 2);
     m.rect = { ...this.rect };
     m.vertices = this.vertices && this.vertices.map(p => ({ ...p }));
+    m.cutouts = this.cutouts.map(h => h.map(p => ({ ...p })));
+    m.redrawAppearance = this.cutouts.length > 0;
     m.line = this.line && this.line.map(p => ({ ...p }));
     m.inkList = this.inkList && this.inkList.map(path => path.map(p => ({ ...p })));
     m.callout = this.callout && this.callout.map(p => ({ ...p }));

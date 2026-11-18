@@ -88,6 +88,8 @@ export class OcrService {
   private lib: PDFDocument | null = null;
   private fonts = new WeakMap<PDFDocument, Promise<PDFFont>>();
   private embeddedStreams = new WeakMap<PageGeometry, PDFRef>();
+  // Results of the documents in other tabs
+  private byDocument = new WeakMap<PDFDocument, { results: OcrResult[]; lastRegion: OcrResult | null; streams: WeakMap<PageGeometry, PDFRef> }>();
 
   constructor() {
     // A rotated page gets a new geometry: its results follow it, in the new view coordinates
@@ -102,17 +104,19 @@ export class OcrService {
       const stream = this.embeddedStreams.get(old);
       if (stream) this.embeddedStreams.set(next, stream);
     });
-    // Another document was opened (or it was closed): the old results don't belong to it
+    // Another document is shown (another tab, or it was closed): its own results come back
     effect(() => {
       const s = this.store.watch();
       if (s.lib !== this.lib) {
+        if (this.lib) this.byDocument.set(this.lib, { results: this.results(), lastRegion: this.lastRegion(), streams: this.embeddedStreams });
+        const kept = s.lib ? this.byDocument.get(s.lib) : undefined;
         this.lib = s.lib;
         this.cancelled = true;
-        this.results.set([]);
-        this.lastRegion.set(null);
+        this.results.set(kept?.results ?? []);
+        this.lastRegion.set(kept?.lastRegion ?? null);
         this.focus.set(null);
         this.drawingRegion.set(false);
-        this.embeddedStreams = new WeakMap();
+        this.embeddedStreams = kept?.streams ?? new WeakMap();
       }
     });
   }

@@ -53,6 +53,9 @@ function circlePath(c: Pt, r: number): string {
   return `M${c.x - r} ${c.y} a${r} ${r} 0 1 0 ${r * 2} 0 a${r} ${r} 0 1 0 ${-r * 2} 0 Z`;
 }
 
+// Size of the vertex squares of the selected line or area (screen pixels)
+export const VERTEX_HANDLE = 8;
+
 // Everything drawn on one page: PDF markups, app measurements and the selection.
 // zoom: screen pixels per view unit (line widths and texts grow with it, like things printed on the plan;
 // boxes and labels that must keep their size on screen are divided by it).
@@ -75,6 +78,14 @@ export function pageShapes(store: DrawingStore, pageIndex: number, g: PageGeomet
       const b = el.bounds;
       const r = g.rectToView({ x: b.x - 4, y: b.y - 4, w: b.w + 8, h: b.h + 8 });
       shapes.push({ d: rectPath(r), fill: 'none', stroke: COLORS.blue, width: 2 * px, dash: `${4 * px} ${3 * px}`, opacity: 1 });
+    }
+    // One line or area selected: a square on every vertex, to drag it
+    const only = store.selection.length === 1 ? store.selection[0] : null;
+    const vertices = only && only.pageIndex === pageIndex ? store.editableVertices(only) : null;
+    for (const p of vertices ?? []) {
+      const v = toView(p);
+      const h = VERTEX_HANDLE * px;
+      shapes.push({ d: rectPath({ x: v.x - h / 2, y: v.y - h / 2, w: h, h }), fill: '#FFFFFF', stroke: COLORS.blue, width: 1.5 * px, opacity: 1 });
     }
   }
   return shapes;

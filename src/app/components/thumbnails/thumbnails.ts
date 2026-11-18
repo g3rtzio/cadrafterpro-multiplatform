@@ -126,6 +126,8 @@ export class PageThumb implements OnDestroy {
               (click)="deleteSelected()"><app-icon class="icon small" name="delete" /></button>
       <button class="icon-button" title="Create Page Labels: name the pages from bookmarks or from a region"
               [disabled]="!s.hasDocument" (click)="labeler.open()"><app-icon class="icon small" name="label" /></button>
+      <button class="icon-button" title="Extract the selected pages to a new PDF…"
+              [disabled]="!s.hasDocument" (click)="s.openExtract()"><app-icon class="icon small" name="file_export" /></button>
       <button class="icon-button" title="Slip Sheet: replace the pages with the same name with the pages of another PDF (an addendum), keeping markups and measurements"
               [disabled]="!s.hasDocument || slipSheet.busy()" (click)="slipSheet.pick()"><app-icon class="icon small" name="restore_page" /></button>
       <span class="count">{{ selectedList().length > 1 ? selectedList().length + ' of ' : '' }}{{ s.pageCount }} pages</span>
@@ -158,6 +160,8 @@ export class PageThumb implements OnDestroy {
         <div class="menu-divider"></div>
         <button class="menu-item" (click)="menu.set(null); s.goTo(m.index); s.startOverlay()">Overlay with Another Page…</button>
         <button class="menu-item" (click)="menu.set(null); labeler.open()">Create Page Labels…</button>
+        <button class="menu-item" (click)="menu.set(null); s.openExtract()">
+          Extract {{ selectedList().length > 1 ? selectedList().length + ' Pages' : 'Page' }}…</button>
         <div class="menu-divider"></div>
         <button class="menu-item destructive" [disabled]="s.pageCount < 2" (click)="menu.set(null); deleteSelected()">
           Delete {{ selectedList().length > 1 ? selectedList().length + ' Pages' : 'Page' }}
@@ -173,20 +177,12 @@ export class Thumbnails {
   readonly filter = input('');
   readonly labeler = inject(PageLabeler);
   readonly slipSheet = inject(SlipSheet);
-  // Pages selected besides the current one (indexes); cleared whenever the pages change
-  private readonly extra = signal<Set<number>>(new Set());
-  private anchor: number | null = null;
   readonly dropAt = signal<number | null>(null);
   readonly menu = signal<{ x: number; y: number; index: number } | null>(null);
   private dragging: number[] | null = null;
-  private pageList: unknown = null;
 
-  // The current page is always selected
-  readonly selectedList = computed(() => {
-    const s = this.store.watch();
-    if (s.pages !== this.pageList) return [s.currentPageIndex];
-    return [...new Set([s.currentPageIndex, ...this.extra()])].filter(i => i < s.pageCount).sort((a, b) => a - b);
-  });
+  // The selected pages (shared with the tree); the current page is always one of them
+  readonly selectedList = computed(() => this.store.watch().selectedPages);
 
   pageShown(index: number): boolean {
     const q = this.filter().trim().toLowerCase();
@@ -197,55 +193,19 @@ export class Thumbnails {
     return this.store.pages.filter((_, i) => this.pageShown(i)).length;
   }
 
-  constructor() {
-    // New page list (added, deleted, moved, another file): the selection starts over
-    effect(() => {
-      const pages = this.store.watch().pages;
-      if (pages !== this.pageList) {
-        this.pageList = pages;
-        this.extra.set(new Set());
-        this.anchor = null;
-      }
-    });
-  }
-
   isSelected(i: number): boolean {
     return this.selectedList().includes(i);
   }
 
   onClick(event: MouseEvent, index: number): void {
-    const s = this.store;
-    if (event.shiftKey) {
-      const from = this.anchor ?? s.currentPageIndex;
-      const range = new Set<number>();
-      for (let i = Math.min(from, index); i <= Math.max(from, index); i++) range.add(i);
-      this.extra.set(range);
-      s.goTo(index);
-      return;
-    }
-    if (event.ctrlKey || event.metaKey) {
-      const set = new Set(this.selectedList());
-      if (set.has(index) && set.size > 1) {
-        set.delete(index);
-        if (index === s.currentPageIndex) s.goTo([...set][0]);
-      } else {
-        set.add(index);
-        s.goTo(index);
-      }
-      this.extra.set(set);
-      this.anchor = index;
-      return;
-    }
-    this.extra.set(new Set());
-    this.anchor = index;
-    s.goTo(index);
+    this.store.clickPage(index, event);
   }
 
   openMenu(event: MouseEvent, index: number): void {
     event.preventDefault();
     event.stopPropagation();
     if (!this.isSelected(index)) {
-      this.extra.set(new Set());
+      this.store.setSelectedPages([]);
       this.store.goTo(index);
     }
     this.menu.set({ x: Math.min(event.clientX, window.innerWidth - 240), y: Math.min(event.clientY, window.innerHeight - 300), index });
@@ -282,9 +242,8 @@ export class Thumbnails {
     const firstNew = s.pages.map((_, i) => i).filter(i => !list.includes(i) && i < before).length;
     s.movePages(list, before);
     // Keep the moved pages selected and the page that was shown (it follows its new place)
-    this.pageList = s.pages;
     const moved = list.map((_, k) => firstNew + k);
-    this.extra.set(new Set(moved));
+    s.setSelectedPages(moved);
     s.goTo(moved[list.indexOf(current)] ?? moved[0]);
   }
 
