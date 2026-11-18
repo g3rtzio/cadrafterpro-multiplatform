@@ -1,4 +1,4 @@
-import type { PDFRef } from 'pdf-lib';
+import type { PDFDocument, PDFRef } from 'pdf-lib';
 import {
   COLORS, LengthUnit, LineStyle, Pt, Rect, TakeoffKind, boundsOf, uid,
 } from './takeoff';
@@ -102,6 +102,7 @@ export class Markup {
   readonly isMeasurement = false;
   ref: PDFRef | null = null;               // its object in the opened file (null = new copy)
   template: Markup | null = null;          // a copy made by "continue" is cloned from this one
+  templateLib: PDFDocument | null = null;  // file the template lives in, when it is another one (pasted from another document)
   dirty = false;                           // changed in the app: rewrite it when saving
 
   subtype = 'Annotation';                  // "Polygon", "PolyLine", "Square", "Ink"...

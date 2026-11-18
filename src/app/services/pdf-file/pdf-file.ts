@@ -1,6 +1,6 @@
 import {
   PDFArray, PDFDict, PDFDocument, PDFFont, PDFHexString, PDFName, PDFNumber, PDFObject, PDFPage, PDFRawStream,
-  PDFRef, PDFStream, PDFString, StandardFonts, decodePDFRawStream,
+  PDFObjectCopier, PDFRef, PDFStream, PDFString, StandardFonts, decodePDFRawStream,
 } from 'pdf-lib';
 import {
   Cubic, LINE_HEIGHT, Markup, Measurement, TEXT_PADDING, cloudCurves, readableAngleAtHalfLength, ellipseCurves, lineEnding, randomName, wrapText,
@@ -328,10 +328,18 @@ export async function writePdf(lib: PDFDocument, input: SaveInput): Promise<Uint
     }
     if (!m.ref) {
       // New copy: clone the original object
-      const source = m.template?.ref ? lib.context.lookupMaybe(m.template.ref, PDFDict) : undefined;
+      const from = m.templateLib ?? lib;
+      const source = m.template?.ref ? from.context.lookupMaybe(m.template.ref, PDFDict) : undefined;
       if (!source) continue;
-      const dict = source.clone(lib.context);
+      let dict = source.clone(from.context);
       ['IRT', 'RT', 'GroupNesting', 'Popup'].forEach(k => dict.delete(PDFName.of(k)));
+      // Pasted from another document: its objects (appearance, measure, fonts) are copied into this file
+      // (without /P, its page, which would bring that whole document along)
+      if (from !== lib) {
+        dict.delete(PDFName.of('P'));
+        dict = PDFObjectCopier.for(from.context, lib.context).copy(dict);
+        dict.set(PDFName.of('P'), page.ref);
+      }
       dict.set(PDFName.of('NM'), PDFHexString.fromText(randomName()));
       m.ref = lib.context.register(dict);
       page.node.addAnnot(m.ref);

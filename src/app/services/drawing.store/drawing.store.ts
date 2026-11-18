@@ -1109,7 +1109,7 @@ export class DrawingStore {
   }
 
   // MARK: - Copy / Paste (Ctrl+C / Ctrl+V) of measurements and markups
-  private clipboard: { elements: PlanElement[]; documentId: string; pastes: number } | null = null;
+  private clipboard: { elements: PlanElement[]; documentId: string; lib: PDFDocument | null; pastes: number } | null = null;
   clipboardKind: 'elements' | 'snapshot' | null = null;   // what Ctrl+V pastes (the last thing copied)
   documentId = uid();                                      // a new one for every document opened
 
@@ -1118,7 +1118,7 @@ export class DrawingStore {
   copySelection(): boolean {
     const list = this.selection.filter(el => el instanceof Measurement || el instanceof Markup);
     if (!list.length) return false;
-    this.clipboard = { elements: [...list], documentId: this.documentId, pastes: 0 };
+    this.clipboard = { elements: [...list], documentId: this.documentId, lib: this.lib, pastes: 0 };
     this.clipboardKind = 'elements';
     this.showToast(`Copied ${list.length} element${list.length === 1 ? '' : 's'}`);
     return true;
@@ -1130,12 +1130,7 @@ export class DrawingStore {
     const clip = this.clipboard;
     if (!clip || !this.hasDocument || !this.pages[pageIndex]) return;
     const sameDocument = clip.documentId === this.documentId;
-    // A markup read from another PDF can't be copied into this one (its object lives in that file)
-    const sources = clip.elements.filter(el => el instanceof Measurement || sameDocument || el.appMade);
-    if (!sources.length) {
-      this.showToast("Markups from another PDF can't be pasted here; measurements can.", true);
-      return;
-    }
+    const sources = clip.elements;
     const boxes = sources.map(el => el.bounds);
     const minX = Math.min(...boxes.map(b => b.x)), minY = Math.min(...boxes.map(b => b.y));
     const maxX = Math.max(...boxes.map(b => b.x + b.w)), maxY = Math.max(...boxes.map(b => b.y + b.h));
@@ -1162,6 +1157,8 @@ export class DrawingStore {
         const b = el.bounds;
         const copy = el.copy({ x: b.x + b.w / 2 + dx, y: b.y + b.h / 2 + dy });
         copy.pageIndex = pageIndex;
+        // From another document: on save its PDF object is copied over from that file
+        if (!sameDocument && !el.appMade && !el.templateLib) copy.templateLib = clip.lib;
         this.markups.push(copy);
         pasted.push(copy);
       }
