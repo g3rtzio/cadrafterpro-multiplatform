@@ -22,6 +22,9 @@ export interface AiProviderInfo {
   keyHint: string;
 }
 
+// Model ids the providers no longer serve; a saved choice with one of these goes back to the default
+const RETIRED_MODELS = ['gemini-2.5-pro'];
+
 export const AI_PROVIDERS: AiProviderInfo[] = [
   {
     id: 'claude', name: 'Claude', defaultModel: 'claude-opus-5-5',
@@ -34,8 +37,8 @@ export const AI_PROVIDERS: AiProviderInfo[] = [
     keyUrl: 'https://platform.openai.com/api-keys', keyHint: 'sk-…',
   },
   {
-    id: 'gemini', name: 'Gemini', defaultModel: 'gemini-2.5-pro',
-    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    id: 'gemini', name: 'Gemini', defaultModel: 'gemini-3.1-pro-preview',
+    models: ['gemini-3.1-pro-preview'],
     keyUrl: 'https://aistudio.google.com/apikey', keyHint: 'AIza…',
   },
 ];
@@ -162,6 +165,8 @@ export class AiAssistant {
   readonly remember = signal(true);
   private readonly keys = signal<Partial<Record<AiProvider, string>>>({});
   private readonly models = signal<Partial<Record<AiProvider, string>>>({});
+  // Models the provider says this key can use (read on Test connection); replaces the suggestions
+  private readonly available = signal<Partial<Record<AiProvider, string[]>>>({});
 
   readonly busy = signal(false);
   readonly progress = signal('');
@@ -185,6 +190,12 @@ export class AiAssistant {
 
   apiKey(provider = this.provider()): string { return this.keys()[provider] ?? ''; }
   model(provider = this.provider()): string { return this.models()[provider] || this.info(provider).defaultModel; }
+
+  // Model ids for the model field: the ones the account can use, or the built-in suggestions
+  modelOptions(provider = this.provider()): string[] {
+    const list = this.available()[provider];
+    return list?.length ? list : this.info(provider).models;
+  }
 
   setProvider(provider: AiProvider): void {
     this.provider.set(provider);
@@ -242,6 +253,14 @@ export class AiAssistant {
         await getJson(`https://api.openai.com/v1/models/${encodeURIComponent(model)}`, { Authorization: `Bearer ${key}` });
         this.status.set({ ok: true, text: `Connected to ChatGPT (${model}).` });
       } else {
+        // Google retires models often: read the list this key can use, then check the chosen one
+        const ids = await listGeminiModels(key);
+        if (ids.length) this.available.update(a => ({ ...a, gemini: ids }));
+        if (ids.length && !ids.includes(model)) {
+          const pick = ids.find(id => /pro/.test(id)) ?? ids[0];
+          this.status.set({ ok: false, text: `${model} is not available for this key. Choose another model, for example ${pick}.` });
+          return false;
+        }
         const m = await getJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`,
           { 'x-goog-api-key': key }) as { displayName?: string };
         this.status.set({ ok: true, text: `Connected to ${m.displayName || model}.` });
@@ -601,7 +620,10 @@ export class AiAssistant {
       if (saved.provider && AI_PROVIDERS.some(p => p.id === saved.provider)) this.provider.set(saved.provider);
       this.remember.set(saved.remember !== false);
       this.keys.set(saved.keys ?? {});
-      this.models.set(saved.models ?? {});
+      const models = { ...(saved.models ?? {}) };
+      // Models Google no longer serves: back to the current default
+      if (models.gemini && RETIRED_MODELS.includes(models.gemini)) delete models.gemini;
+      this.models.set(models);
     } catch {
       // storage blocked or damaged: start empty
     }
@@ -841,6 +863,26 @@ function round2(x: number): number {
 }
 
 // MARK: - Helpers
+// Gemini models this key can use for chat (generateContent), newest names first
+async function listGeminiModels(apiKey: string): Promise<string[]> {
+  const ids: string[] = [];
+  let pageToken = '';
+  for (let page = 0; page < 5; page++) {
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000'
+      + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+    const data = await getJson(url, { 'x-goog-api-key': apiKey }) as {
+      models?: { name: string; supportedGenerationMethods?: string[] }[]; nextPageToken?: string;
+    };
+    for (const m of data.models ?? []) {
+      const id = m.name.replace(/^models\//, '');
+      if (m.supportedGenerationMethods?.includes('generateContent') && /^gemini-/.test(id)) ids.push(id);
+    }
+    pageToken = data.nextPageToken ?? '';
+    if (!pageToken) break;
+  }
+  return ids.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+}
+
 async function getJson(url: string, headers: Record<string, string>): Promise<unknown> {
   const response = await fetch(url, { headers });
   return readJson(response);

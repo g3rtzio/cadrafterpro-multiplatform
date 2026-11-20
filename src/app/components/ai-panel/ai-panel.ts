@@ -118,7 +118,7 @@ import { Icon } from '../icon/icon';
       <label class="field">Model
         <input [attr.list]="'ai-models-' + info.id" [value]="ai.model()" (change)="ai.setModel(value($event))" />
         <datalist [id]="'ai-models-' + info.id">
-          @for (m of info.models; track m) { <option [value]="m"></option> }
+          @for (m of ai.modelOptions(info.id); track m) { <option [value]="m"></option> }
         </datalist>
       </label>
       <label class="check"><input type="checkbox" [checked]="ai.remember()" (change)="ai.setRemember(checked($event))" />
