@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, ElementRef, effect, inject, signal, untracked, viewChild } from '@angular/core';
-import { AI_PROVIDERS, AiAssistant, AiProvider, LOCAL_SERVERS } from '../../services/ai-assistant/ai-assistant';
+import { AI_PROVIDERS, AiAssistant, AiProvider, ChatAttach, LOCAL_SERVERS } from '../../services/ai-assistant/ai-assistant';
 import { DrawingStore } from '../../services/drawing.store/drawing.store';
 import { Icon } from '../icon/icon';
 
@@ -37,7 +37,7 @@ import { Icon } from '../icon/icon';
       <div class="chat-list" #chatList>
         @for (m of ai.chat(); track m.id) {
           <div class="bubble" [class.user]="m.role === 'user'" [class.bad]="m.error">
-            @if (m.page) { <div class="attached"><app-icon class="icon small" name="description" /> {{ m.page.name }}</div> }
+            @if (m.page) { <div class="attached"><app-icon class="icon small" [name]="m.page.all ? 'library_books' : 'description'" /> {{ m.page.name }}</div> }
             @if (m.role === 'user') {
               <div class="text">{{ m.text }}</div>
             } @else {
@@ -65,7 +65,7 @@ import { Icon } from '../icon/icon';
           <div class="chat-empty">
             <app-icon class="icon" name="auto_awesome" />
             <div>Ask {{ info.name }} about this drawing.</div>
-            <div class="secondary small">The current page goes along as a picture with its text. The AI can also count symbols, trace walls and room areas, and add them to the takeoff.</div>
+            <div class="secondary small">The current page (or every page, with All pages) goes along as a picture with its text. The AI can also count symbols, trace walls and room areas, and add them to the takeoff.</div>
             <div class="suggestions">
               @for (q of suggestions; track q) {
                 <button [disabled]="!s.hasDocument" (click)="ask(q)">{{ q }}</button>
@@ -78,9 +78,14 @@ import { Icon } from '../icon/icon';
         <textarea #input rows="3" placeholder="Message {{ info.name }}… (Enter sends, Shift+Enter new line)" [value]="draft()"
                   (input)="draft.set(value($event))" (keydown.enter)="enter($event)"></textarea>
         <div class="composer-row">
-          <label class="check small" [class.off]="!s.hasDocument">
-            <input type="checkbox" [checked]="withPage() && s.hasDocument" [disabled]="!s.hasDocument" (change)="withPage.set(checked($event))" />
-            <span class="page-name">Include page {{ s.hasDocument ? s.pageName(s.currentPageIndex) : '' }}</span>
+          <!-- What goes along with the message: nothing, the current page or the whole document -->
+          <label class="attach small" [class.off]="!s.hasDocument" title="What the AI sees with your message">
+            <app-icon class="icon small" name="pages" />
+            <select [disabled]="!s.hasDocument" (change)="attach.set($any(value($event)))">
+              <option value="page" [selected]="attach() === 'page'">This page{{ s.hasDocument ? ': ' + s.pageName(s.currentPageIndex) : '' }}</option>
+              <option value="all" [selected]="attach() === 'all'">All pages{{ s.hasDocument ? ' (' + s.pageCount + ')' : '' }}</option>
+              <option value="none" [selected]="attach() === 'none'">No page</option>
+            </select>
           </label>
           @if (ai.chatBusy()) {
             <button class="icon-button send" title="Stop" (click)="ai.stopChat()"><app-icon class="icon small" name="stop" /></button>
@@ -216,8 +221,10 @@ import { Icon } from '../icon/icon';
     .composer textarea { width: 100%; box-sizing: border-box; resize: none; }
     .composer-row { display: flex; align-items: center; gap: 6px; }
     .composer-row .check { flex: 1; min-width: 0; align-items: center; }
-    .composer-row .check.off { opacity: 0.5; }
+    .composer-row .off { opacity: 0.5; }
     .page-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .attach { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1; }
+    .attach select { min-width: 0; flex: 1; font-size: 12px; }
     .send.primary { background: var(--accent); color: #fff; }
     .send:disabled { opacity: 0.4; }
   `],
@@ -232,7 +239,7 @@ export class AiPanel {
   // What the panel shows; without a key it is always the connection form
   readonly view = signal<'chat' | 'settings'>(this.ai.apiKey() ? 'chat' : 'settings');
   readonly draft = signal('');
-  readonly withPage = signal(true);
+  readonly attach = signal<ChatAttach>('page');
   readonly suggestions = [
     'Summarize this sheet',
     'What is the scale of this sheet?',
@@ -271,7 +278,7 @@ export class AiPanel {
 
   ask(text: string): void {
     if (!text.trim()) return;
-    void this.ai.send(text, this.withPage());
+    void this.ai.send(text, this.store.hasDocument ? this.attach() : 'none');
     this.draft.set('');
   }
 

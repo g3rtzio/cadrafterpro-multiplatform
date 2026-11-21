@@ -110,11 +110,14 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;                              // what is shown (without the action block)
   raw: string;                               // what goes back to the model in the history
-  page?: { index: number; name: string };    // page sent along with a user message
+  page?: { index: number; name: string; all?: boolean };   // page (or all pages) sent along with a user message
   error?: boolean;
   streaming?: boolean;
   action?: ChatCountAction;
 }
+
+// What goes along with a chat message: nothing, the current page or every page of the document
+export type ChatAttach = 'none' | 'page' | 'all';
 
 // One turn of the conversation as the providers receive it
 interface ChatTurn { role: 'user' | 'assistant'; text: string; images: string[]; }
@@ -124,6 +127,9 @@ interface ChatTurn { role: 'user' | 'assistant'; text: string; images: string[];
 const ACTION_BLOCK = /```(takeoff-(?:count|linear|area)|json)?[ \t]*\r?\n?(\s*\{[\s\S]*?"items"[\s\S]*?)(```|$)/;
 const CHAT_HISTORY = 30;                     // messages sent back to the model
 const CHAT_WORDS = 2500;                     // words of page text sent with a message
+const ALL_PAGES_MAX = 30;                    // pages sent as pictures with "All pages"
+const ALL_PAGES_EDGE = 1024;                 // long edge of each of those pictures, in pixels
+const ALL_PAGES_WORDS = 6000;                // words of text for the whole document
 
 const CHAT_PROMPT = `You are the AI assistant of CadrafterPro, a construction takeoff and estimating app (similar to PlanSwift and Bluebeam). You chat with an estimator about the drawing they have open.
 - Answer in the same language the user writes in. Be concise and practical; use short lists when they help.
@@ -422,12 +428,15 @@ export class AiAssistant {
   // MARK: - Chat
   // Sends a message (with the current page as a picture plus its text when withPage) and
   // streams the answer into the conversation
-  async send(text: string, withPage: boolean): Promise<void> {
+  async send(text: string, attach: ChatAttach | boolean): Promise<void> {
     const s = this.store;
     const question = text.trim();
     if (!question || this.chatBusy() || this.busy()) return;
     const pageIndex = s.currentPageIndex;
-    const page = withPage && s.hasDocument && s.pages[pageIndex] ? { index: pageIndex, name: s.pageName(pageIndex) } : undefined;
+    const mode: ChatAttach = attach === true ? 'page' : attach === false ? 'none' : attach;
+    const page = mode === 'none' || !s.hasDocument || !s.pages[pageIndex] ? undefined
+      : mode === 'all' ? { index: pageIndex, name: `All pages (${s.pageCount})`, all: true }
+      : { index: pageIndex, name: s.pageName(pageIndex) };
     this.chat.update(list => [...list, { id: this.nextId++, role: 'user', text: question, raw: question, page }]);
     const answerId = this.nextId++;
     this.chat.update(list => [...list, { id: answerId, role: 'assistant', text: '', raw: '', streaming: true }]);
@@ -437,7 +446,9 @@ export class AiAssistant {
     let raw = '';
     try {
       if (!this.apiKey()) throw new Error('Connect an AI provider first (API key or local server).');
-      const turns = await this.chatTurns(page?.index);
+      const turns = await this.chatTurns(page?.index, !!page?.all,
+        (done, total) => this.patch(answerId, { text: `Reading the pages… (${done} of ${total})` }));
+      this.patch(answerId, { text: '' });
       if (abort.signal.aborted) return;
       const onText = (delta: string) => {
         raw += delta;
@@ -528,31 +539,46 @@ export class AiAssistant {
     this.chat.update(list => list.map(m => m.id === id ? { ...m, ...change } : m));
   }
 
-  // The conversation for the model; only the newest message carries its page (picture and text)
-  private async chatTurns(pageIndex: number | undefined): Promise<ChatTurn[]> {
+  // The conversation for the model; only the newest message carries its page (picture and text),
+  // or every page when `all`
+  private async chatTurns(pageIndex: number | undefined, all = false,
+                          onProgress?: (done: number, total: number) => void): Promise<ChatTurn[]> {
+    const s = this.store;
     const messages = this.chat().filter(m => !m.streaming && !m.error && m.raw).slice(-CHAT_HISTORY);
     while (messages.length && messages[0].role !== 'user') messages.shift();
     const turns: ChatTurn[] = messages.map(m => ({
       role: m.role,
-      text: m.page ? `${m.raw}\n\n[Page attached: ${m.page.name}]` : m.raw,
+      text: m.page ? `${m.raw}\n\n[${m.page.all ? 'Attached' : 'Page attached'}: ${m.page.name}]` : m.raw,
       images: [],
     }));
     const last = turns[turns.length - 1];
-    const g = pageIndex === undefined ? undefined : this.store.pages[pageIndex];
-    if (last && g && pageIndex !== undefined) {
-      const [tile] = await this.tiles(g, 1);
-      last.images.push(tile.jpeg);
-      const words = (await this.text.pageTextWords(pageIndex)).slice(0, CHAT_WORDS);
-      let text = '';
-      let line = -1;
-      for (const w of words) {
-        if (text) text += w.line === line ? ' ' : '\n';
-        text += w.str;
-        line = w.line;
+    const question = messages[messages.length - 1]?.raw ?? '';
+    if (last && all && pageIndex !== undefined && s.pageCount) {
+      const count = Math.min(s.pageCount, ALL_PAGES_MAX);
+      const perPage = Math.max(150, Math.floor(ALL_PAGES_WORDS / count));
+      const parts = [`Attached: the whole drawing, ${s.pageCount} page${s.pageCount === 1 ? '' : 's'}`
+        + (count < s.pageCount ? ` (pictures of the first ${count} only)` : '')
+        + `. The user is looking at page ${pageIndex + 1} (${s.pageName(pageIndex)}). The pictures come in page order.`];
+      for (let i = 0; i < count; i++) {
+        onProgress?.(i + 1, count);
+        const g = s.pages[i];
+        if (!g) continue;
+        const [tile] = await this.tiles(g, 1, ALL_PAGES_EDGE);
+        last.images.push(tile.jpeg);
+        const text = this.pageText(await this.text.pageTextWords(i), perPage);
+        parts.push(`--- Page ${i + 1}: ${s.pageName(i)} ---` + (text ? `\n${text}` : '\n(no text layer: read the picture)'));
       }
-      last.text = `Attached: the sheet "${this.store.pageName(pageIndex)}" (page ${pageIndex + 1} of ${this.store.pageCount}).`
-        + (text ? `\nText printed on the sheet:\n${text}` : '\nThe sheet has no text layer (scanned): read the picture.')
-        + `\n\n${messages[messages.length - 1].raw}`;
+      last.text = `${parts.join('\n\n')}\n\n${question}`;
+    } else {
+      const g = pageIndex === undefined ? undefined : s.pages[pageIndex];
+      if (last && g && pageIndex !== undefined) {
+        const [tile] = await this.tiles(g, 1);
+        last.images.push(tile.jpeg);
+        const text = this.pageText(await this.text.pageTextWords(pageIndex), CHAT_WORDS);
+        last.text = `Attached: the sheet "${s.pageName(pageIndex)}" (page ${pageIndex + 1} of ${s.pageCount}).`
+          + (text ? `\nText printed on the sheet:\n${text}` : '\nThe sheet has no text layer (scanned): read the picture.')
+          + `\n\n${question}`;
+      }
     }
     // Providers want user and assistant turns to alternate: merge neighbours
     const merged: ChatTurn[] = [];
@@ -566,6 +592,18 @@ export class AiAssistant {
       }
     }
     return merged;
+  }
+
+  // Words of a page as lines of text, at most `limit` words
+  private pageText(words: { str: string; line: number }[], limit: number): string {
+    let text = '';
+    let line = -1;
+    for (const w of words.slice(0, limit)) {
+      if (text) text += w.line === line ? ' ' : '\n';
+      text += w.str;
+      line = w.line;
+    }
+    return text;
   }
 
   // System prompt plus what the app knows about the open document
@@ -749,7 +787,7 @@ export class AiAssistant {
 
   // MARK: - Sheet for the model
   // The page split in detail × detail pictures with a small overlap
-  private async tiles(g: PageGeometry, detail: AiDetail): Promise<Tile[]> {
+  private async tiles(g: PageGeometry, detail: AiDetail, maxEdge = MAX_EDGE): Promise<Tile[]> {
     const tiles: Tile[] = [];
     const overlap = detail > 1 ? 0.03 : 0;
     const tw = g.width / detail, th = g.height / detail;
@@ -759,7 +797,7 @@ export class AiAssistant {
         const x1 = Math.min(g.width, (col + 1) * tw + overlap * g.width), y1 = Math.min(g.height, (row + 1) * th + overlap * g.height);
         const region = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
         const core = { x: col * tw, y: row * th, w: tw, h: th };
-        const scale = Math.min(MAX_EDGE / Math.max(region.w, region.h), MAX_DPI / 72);
+        const scale = Math.min(maxEdge / Math.max(region.w, region.h), MAX_DPI / 72);
         const canvas = await renderRegion(g, region, scale);
         if (!canvas) throw new Error('The page could not be drawn.');
         const jpeg = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
