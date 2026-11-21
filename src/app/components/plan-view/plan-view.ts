@@ -16,6 +16,8 @@ import { TextSearch } from '../../services/text-search/text-search';
 import { TextSelect } from '../../services/text-select/text-select';
 import { CalcTools } from '../../services/calc-tools/calc-tools';
 import { CutoutTool } from '../../services/cutout-tool/cutout-tool';
+import { JoistTool } from '../../services/joist-tool/joist-tool';
+import { JoistPanel } from '../joist-panel/joist-panel';
 import { OverlayPanel } from '../overlay-panel/overlay-panel';
 import { SvgShapes } from '../svg-shapes/svg-shapes';
 
@@ -30,7 +32,7 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
 // the measurements, the selection and the measurement in progress.
 @Component({
   selector: 'app-plan-view',
-  imports: [OverlayPanel, SvgShapes],
+  imports: [JoistPanel, OverlayPanel, SvgShapes],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .markup-editor { position: absolute; z-index: 5; box-sizing: border-box; resize: none; overflow: hidden; line-height: 1.2;
@@ -67,6 +69,7 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
             <g [appShapes]="textShapes()"></g>
             <g [appShapes]="calcShapes()"></g>
             <g [appShapes]="cutoutShapes()"></g>
+            <g [appShapes]="joistShapes()"></g>
             <g [appShapes]="liveShapes()"></g>
             <g [appShapes]="markupPreview()"></g>
             <g [appShapes]="overlayHandles()"></g>
@@ -104,6 +107,7 @@ const MAX_CANVAS_PIXELS = 16_000_000;     // Safari's canvas limit is about 16.7
           </filter>
         </svg>
         @if (showOverlayPanel()) { <app-overlay-panel /> }
+        @if (showJoistPanel()) { <app-joist-panel /> }
       } @else {
         <div class="plan-empty">
           @if (store.watch().loading) { Opening… } @else { Open a drawing (⌘O) or drop a PDF here }
@@ -120,6 +124,7 @@ export class PlanView implements OnDestroy {
   readonly textSelect = inject(TextSelect);
   readonly calc = inject(CalcTools);
   readonly cutout = inject(CutoutTool);
+  readonly joist = inject(JoistTool);
   readonly textFont = TEXT_FONT;
   private readonly editorField = viewChild<ElementRef<HTMLTextAreaElement>>('editorField');
   readonly ocr = inject(OcrService);
@@ -165,6 +170,11 @@ export class PlanView implements OnDestroy {
     if (!o) return false;
     const onBase = s.pageIndexes.findIndex((p, i) => p === o.baseIndex && (i === 0 || s.splitMode !== 'single'));
     return onBase >= 0 ? onBase === this.pane() : s.activePane === this.pane();
+  });
+  // The Joist Tool panel goes in the active pane
+  readonly showJoistPanel = computed(() => {
+    const s = this.store.watch();
+    return this.joist.open() && !this.foreign() && s.activePane === this.pane();
   });
   private readonly overlayCanvas = viewChild<ElementRef<HTMLCanvasElement>>('overlayCanvas');
   private overlayDrawn: { canvas: HTMLCanvasElement; source: PageGeometry } | null = null;
@@ -235,7 +245,7 @@ export class PlanView implements OnDestroy {
     if (s.snapshotMode === 'place') return 'copy';
     if (this.overlayHere()?.adjusting) return 'move';
     if (this.textSelect.active()) return 'text';
-    if (this.calc.mode() || this.cutout.active()) return 'crosshair';
+    if (this.calc.mode() || this.cutout.active() || this.joist.mode()) return 'crosshair';
     if (s.tool !== 'none' || s.drawingViewport || this.markups.tool() || this.ocr.drawingRegion()) return 'crosshair';
     if (this.panning()) return 'grabbing';
     switch (s.interaction) {
@@ -453,6 +463,37 @@ export class PlanView implements OnDestroy {
     }
     v.forEach((p, i) => shapes.push({ d: rectPath({ x: p.x - (i ? 3 : 5) * px, y: p.y - (i ? 3 : 5) * px, w: (i ? 6 : 10) * px, h: (i ? 6 : 10) * px }),
       fill: i ? red : '#FFFFFF', stroke: red, width: 1.5 * px, opacity: 1 }));
+    return shapes;
+  });
+
+  // Joist Tool in progress: the area being drawn, or the direction / split line with its arrow
+  readonly joistShapes = computed<Shape[]>(() => {
+    const mode = this.joist.mode();
+    const now = this.joist.current();
+    const g = this.liveGeometry();
+    if (!mode || !g || !now || now.pageIndex !== this.pageIndex()) return [];
+    const px = 1 / Math.max(this.zoom(), 0.01);
+    const hover = this.hover();
+    const color = mode === 'split' ? COLORS.red : this.joist.settings().color;
+    const v = now.points.map(p => g.toView(p));
+    const all = hover ? [...v, g.toView(hover.point)] : v;
+    const shapes: Shape[] = [];
+    if (mode === 'area') {
+      if (all.length >= 3) shapes.push({ d: pathOf(all, true), fill: color, fillOpacity: 0.15, stroke: 'none', width: 0, opacity: 1 });
+      if (all.length > 1) shapes.push({ d: pathOf(all, false), fill: 'none', stroke: color, width: 2 * px, opacity: 1 });
+    } else if (all.length === 2) {
+      const [a, b] = all;
+      shapes.push({ d: pathOf(all, false), fill: 'none', stroke: color, width: 2 * px, dash: `${6 * px} ${4 * px}`, opacity: 1 });
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (len > 0 && mode === 'direction') {
+        const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len, size = 12 * px;
+        const head = [{ x: b.x - ux * size - uy * size * 0.5, y: b.y - uy * size + ux * size * 0.5 }, b,
+          { x: b.x - ux * size + uy * size * 0.5, y: b.y - uy * size - ux * size * 0.5 }];
+        shapes.push({ d: pathOf(head, false), fill: 'none', stroke: color, width: 2 * px, opacity: 1 });
+      }
+    }
+    v.forEach((p, i) => shapes.push({ d: rectPath({ x: p.x - (i ? 3 : 5) * px, y: p.y - (i ? 3 : 5) * px, w: (i ? 6 : 10) * px, h: (i ? 6 : 10) * px }),
+      fill: i ? color : '#FFFFFF', stroke: color, width: 1.5 * px, opacity: 1 }));
     return shapes;
   });
 
@@ -814,7 +855,7 @@ export class PlanView implements OnDestroy {
 
   private refreshHover(e: MouseEvent): void {
     const s = this.store;
-    if (this.foreign() || (s.tool === 'none' && !this.markups.tool() && !this.calc.mode() && !this.cutout.active())) {
+    if (this.foreign() || (s.tool === 'none' && !this.markups.tool() && !this.calc.mode() && !this.cutout.active() && !this.joist.mode())) {
       if (this.hover()) this.hover.set(null);
       return;
     }
@@ -849,6 +890,8 @@ export class PlanView implements OnDestroy {
     if (calc && calc.page === this.geometry()) return calc.points[calc.points.length - 1];
     const hole = this.cutout.current();
     if (hole && hole.pageIndex === page) return hole.points[hole.points.length - 1];
+    const joist = this.joist.current();
+    if (joist && joist.pageIndex === page) return joist.points[joist.points.length - 1];
     const clicks = this.markups.clicks();
     if (clicks && clicks.pageIndex === page && clicks.points.length) return clicks.points[clicks.points.length - 1];
     return null;
@@ -858,7 +901,7 @@ export class PlanView implements OnDestroy {
   // within 12 screen pixels. Only while a measuring tool is active.
   private snapToVertex(point: Pt): { point: Pt; snapped: boolean } {
     const s = this.store;
-    if (!s.snapEnabled || (s.tool === 'none' && !this.markups.tool() && !this.cutout.active()) || this.markups.isFreehand) {
+    if (!s.snapEnabled || (s.tool === 'none' && !this.markups.tool() && !this.cutout.active() && !this.joist.mode()) || this.markups.isFreehand) {
       return { point, snapped: false };
     }
     const radius = 12 / Math.max(this.zoom(), 0.01);
@@ -912,6 +955,19 @@ export class PlanView implements OnDestroy {
       this.lastClick = isDouble ? null : { time: now, x: screen.x, y: screen.y };
       if (isDouble) this.cutout.finish();
       else this.cutout.addPoint(this.pageIndex(), target.point, 8 / Math.max(this.zoom(), 0.01));
+      this.hover.set(target);
+      return;
+    }
+
+    // Joist Tool: corners of the area, then the start and end of the joist direction (or of a split line)
+    if (this.joist.mode()) {
+      const target = this.snap(page, e);
+      const now = performance.now();
+      const last = this.lastClick;
+      const isDouble = !!last && now - last.time < 400 && Math.hypot(screen.x - last.x, screen.y - last.y) < 5;
+      this.lastClick = isDouble ? null : { time: now, x: screen.x, y: screen.y };
+      if (isDouble && this.joist.mode() === 'area') this.joist.finish();
+      else this.joist.addPoint(this.pageIndex(), target.point, 8 / Math.max(this.zoom(), 0.01));
       this.hover.set(target);
       return;
     }
@@ -1271,6 +1327,12 @@ export class PlanView implements OnDestroy {
       if (e.key === 'Backspace' && this.cutout.current()) { e.preventDefault(); this.cutout.undoPoint(); return; }
       if (e.key === 'Escape') { this.cutout.escape(); this.hover.set(null); return; }
     }
+    // Joist Tool: Enter closes the area, Backspace removes the last point, Esc steps back then leaves
+    if (this.joist.open()) {
+      if (e.key === 'Enter' && this.joist.mode() === 'area') { e.preventDefault(); this.joist.finish(); return; }
+      if (e.key === 'Backspace' && this.joist.current()) { e.preventDefault(); this.joist.undoPoint(); return; }
+      if (e.key === 'Escape') { this.joist.escape(); this.hover.set(null); return; }
+    }
     // Pitch / Triangulate: Esc drops the points in progress, then leaves the tool
     if (this.calc.mode() && e.key === 'Escape') {
       this.calc.escape();
@@ -1327,6 +1389,10 @@ export class PlanView implements OnDestroy {
     const s = this.store;
     if (this.cutout.active()) {
       this.cutout.finish();
+      return;
+    }
+    if (this.joist.mode()) {
+      if (this.joist.mode() === 'area') this.joist.finish();
       return;
     }
     if (this.textSelect.active()) {

@@ -9,6 +9,7 @@ import {
   scaleName, uid,
 } from '../../models/takeoff';
 import { FilterGroup, NamedFilter, isFilterEmpty, matchesFilter, parseFilter } from '../../models/estimate-filter';
+import { pickSavePdf, rememberFile } from '../file-picker/file-picker';
 import { readPage, readPdf, writePdf } from '../pdf-file/pdf-file';
 import { PageGeometry, SnapIndex, openRenderer } from '../pdf-render/pdf-render';
 import { Cell, xlsxBlob } from '../xlsx/xlsx';
@@ -107,12 +108,15 @@ export interface SnapshotClip {
   h: number;
 }
 
-// "Insert Pages" dialog: a PDF that was picked, waiting for the pages and the position
-export interface InsertRequest {
-  id: string;
+// "Insert Pages" dialog: one or more PDFs that were picked or dropped, waiting for the pages and the position
+export interface InsertFile {
   name: string;
   bytes: Uint8Array;
   pageCount: number;
+}
+export interface InsertRequest {
+  id: string;
+  files: InsertFile[];                    // in the order their pages go in
   at: number;                             // suggested position (index the first new page takes)
 }
 
@@ -288,6 +292,7 @@ export class DrawingStore {
       this.showToast(`${name} is already open`);
       return;
     }
+    if (handle) void rememberFile(handle);              // the next Open dialog starts in this folder
     this.loading = true;
     this.touch();
     try {
@@ -1582,8 +1587,7 @@ export class DrawingStore {
     if (!this.lib) return;
     this.finishCurrentMeasurement();
     const suggested = this.fileName || 'Takeoff.pdf';
-    const picker = (window as unknown as { showSaveFilePicker?: (o: object) => Promise<FileSystemFileHandle> })
-      .showSaveFilePicker;
+    const picker = (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker;
     if (!picker) {
       // Safari and Firefox: the browser downloads the file
       const bytes = await this.write();
@@ -1591,15 +1595,9 @@ export class DrawingStore {
       this.showToast(`Downloaded ${suggested}`);
       return;
     }
-    let handle: FileSystemFileHandle;
-    try {
-      handle = await picker({
-        suggestedName: suggested,
-        types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
-      });
-    } catch {
-      return;                                                   // cancelled
-    }
+    // Opens in the folder of this file (or the last folder used)
+    const handle = await pickSavePdf(suggested, this.fileHandle);
+    if (!handle) return;                                        // cancelled
     try {
       const bytes = await this.write();
       const writable = await handle.createWritable();
@@ -1888,6 +1886,39 @@ export class DrawingStore {
     return true;
   }
 
+  // MARK: - Joist Tool (an area filled with joists, see services/joist-tool.ts)
+  // Item with this name and kind; a new one when there is none (not selected, so no tool starts)
+  ensureItem(name: string, kind: TakeoffKind, color: string): TakeoffItem {
+    const same = this.items.find(i => i.name === name && i.kind === kind);
+    if (same) return same;
+    const item: TakeoffItem = { id: uid(), name, kind, color, isVisible: true };
+    this.items.push(item);
+    return item;
+  }
+
+  // New measurement of an item, with the item's look (not on the plan until replaceMeasurements)
+  makeMeasurement(item: TakeoffItem, pageIndex: number, points: Pt[]): Measurement {
+    const m = new Measurement(item.kind, pageIndex, item.id);
+    m.lineColor = item.color;
+    m.fillColor = item.fillColor ?? null;
+    m.lengthUnit = this.unitFor(item.kind);
+    m.visible = item.isVisible;
+    this.applyLastStyle(m, item);
+    m.points = points.map(p => ({ ...p }));
+    return m;
+  }
+
+  // Adds and removes measurements (the caller takes the Undo checkpoint). The new ones go in first,
+  // so an item that is redrawn keeps its estimate row, properties and parts.
+  replaceMeasurements(remove: Measurement[], add: Measurement[]): void {
+    for (const m of add) {
+      this.updateCaption(m);
+      this.measurements.push(m);
+    }
+    if (remove.length) this.removeElements(new Set<PlanElement>(remove));
+    this.touch();
+  }
+
   // Selected areas with holes (for "Remove Cut Outs")
   get selectionHasCutouts(): boolean {
     return this.selection.some(el => (el instanceof Measurement || el instanceof Markup) && el.cutouts.length > 0);
@@ -1955,16 +1986,23 @@ export class DrawingStore {
     this.showToast(`Blank page added (${this.pageName(at)})`);
   }
 
-  // A PDF was picked (or dropped on the Pages panel): ask which pages and where
-  async requestInsertPages(bytes: Uint8Array, name: string, at = this.currentPageIndex + 1): Promise<void> {
-    if (!this.lib) return;
-    try {
-      const source = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
-      this.insertRequest = { id: uid(), name, bytes, pageCount: source.getPageCount(), at };
-    } catch (error) {
-      console.error(error);
-      this.showToast(`Couldn't read ${name}`, true);
+  // PDFs were picked (From PDF) or dropped on the Pages panel: ask which pages and where.
+  // Files that can't be read are skipped with a message.
+  async requestInsertPages(files: { bytes: Uint8Array; name: string }[], at = this.currentPageIndex + 1): Promise<void> {
+    if (!this.lib || files.length === 0) return;
+    const ready: InsertFile[] = [];
+    const failed: string[] = [];
+    for (const f of files) {
+      try {
+        const source = await PDFDocument.load(f.bytes, { ignoreEncryption: true, updateMetadata: false });
+        ready.push({ name: f.name, bytes: f.bytes, pageCount: source.getPageCount() });
+      } catch (error) {
+        console.error(error);
+        failed.push(f.name);
+      }
     }
+    if (failed.length) this.showToast(`Couldn't read ${failed.join(', ')}`, true);
+    if (ready.length) this.insertRequest = { id: uid(), files: ready, at };
     this.touch();
   }
 
@@ -1973,39 +2011,57 @@ export class DrawingStore {
     this.touch();
   }
 
-  // Insert in the dialog: copies those pages (with their markups and scales) at `at`
-  async insertPages(pageNumbers: number[], at: number): Promise<void> {
+  // Insert in the dialog: copies the chosen pages of every file, in order, starting at `at`
+  // (with their markups and scales). pageNumbers[k] = page numbers (1-based) of file k.
+  async insertPages(pageNumbers: number[][], at: number): Promise<void> {
     const request = this.insertRequest;
     const lib = this.lib;
     this.insertRequest = null;
-    if (!request || !lib || pageNumbers.length === 0) return this.touch();
+    if (!request || !lib) return this.touch();
+    const position = Math.min(Math.max(at, 0), this.pageCount);
+    const added: { page: PDFPage; geometry: PageGeometry; label: string }[] = [];
+    const failed: string[] = [];
+    this.loading = true;
+    this.touch();
     try {
-      const source = await PDFDocument.load(request.bytes, { ignoreEncryption: true, updateMetadata: false });
-      const indexes = pageNumbers.map(n => n - 1);
-      const copies = await lib.copyPages(source, indexes);
-      const renderer = await openRenderer(request.bytes);
-      this.extraRenderers.push(renderer);
-      const labels = await renderer.getPageLabels().catch(() => null);
-      const geometries = await Promise.all(indexes.map(i => renderer.getPage(i + 1).then(p => new PageGeometry(p))));
-      const slots: PageSlot[] = this.pages.map((_, i) => ({ old: i }));
-      const position = Math.min(Math.max(at, 0), this.pageCount);
-      slots.splice(position, 0, ...copies.map((page, k) => {
-        const label = labels?.[indexes[k]] ?? '';
-        return { page, geometry: geometries[k], label: label === String(indexes[k] + 1) ? '' : label };
-      }));
-      this.rebuildPages(slots);
-      // Markups and scales that came with the new pages
-      for (let k = 0; k < copies.length; k++) {
-        const data = readPage(copies[k], position + k);
-        this.markups.push(...data.markups);
-        if (data.scale !== null) this.pageScales.set(position + k, data.scale);
-        this.viewports.push(...data.viewports);
+      for (const [k, file] of request.files.entries()) {
+        const indexes = (pageNumbers[k] ?? []).map(n => n - 1).filter(i => i >= 0 && i < file.pageCount);
+        if (indexes.length === 0) continue;
+        try {
+          const source = await PDFDocument.load(file.bytes, { ignoreEncryption: true, updateMetadata: false });
+          const copies = await lib.copyPages(source, indexes);
+          const renderer = await openRenderer(file.bytes);
+          this.extraRenderers.push(renderer);
+          const labels = await renderer.getPageLabels().catch(() => null);
+          const geometries = await Promise.all(indexes.map(i => renderer.getPage(i + 1).then(p => new PageGeometry(p))));
+          copies.forEach((page, j) => {
+            const label = labels?.[indexes[j]] ?? '';
+            added.push({ page, geometry: geometries[j], label: label === String(indexes[j] + 1) ? '' : label });
+          });
+        } catch (error) {
+          console.error(error);
+          failed.push(file.name);
+        }
       }
-      this.goTo(position);
-      this.showToast(`${copies.length} page${copies.length === 1 ? '' : 's'} inserted from ${request.name}`);
-    } catch (error) {
-      console.error(error);
-      this.showToast(`Couldn't insert pages from ${request.name}`, true);
+      if (added.length) {
+        const slots: PageSlot[] = this.pages.map((_, i) => ({ old: i }));
+        slots.splice(position, 0, ...added);
+        this.rebuildPages(slots);
+        // Markups and scales that came with the new pages
+        added.forEach((slot, k) => {
+          const data = readPage(slot.page, position + k);
+          this.markups.push(...data.markups);
+          if (data.scale !== null) this.pageScales.set(position + k, data.scale);
+          this.viewports.push(...data.viewports);
+        });
+        this.goTo(position);
+      }
+      const from = request.files.length === 1 ? request.files[0].name : `${request.files.length - failed.length} files`;
+      if (failed.length) this.showToast(`Couldn't insert pages from ${failed.join(', ')}`, true);
+      else this.showToast(`${added.length} page${added.length === 1 ? '' : 's'} inserted from ${from}`);
+    } finally {
+      this.loading = false;
+      this.touch();
     }
   }
 

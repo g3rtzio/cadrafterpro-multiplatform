@@ -20,6 +20,7 @@ import { Resizable } from './components/resizable/resizable';
 import { SlipSheetDialog } from './components/slip-sheet-dialog/slip-sheet-dialog';
 import { SlipSheet } from './services/slip-sheet/slip-sheet';
 import { PageLabeler } from './services/page-labels/page-labels';
+import { pickPdfFiles } from './services/file-picker/file-picker';
 import { InsertPagesDialog } from './components/insert-pages-dialog/insert-pages-dialog';
 import { PageLabelsDialog } from './components/page-labels-dialog/page-labels-dialog';
 import { RotatePagesDialog } from './components/rotate-pages-dialog/rotate-pages-dialog';
@@ -236,34 +237,10 @@ export class App {
   // Open File: with the File System Access API (Chrome, Edge) Save can write over the same file;
   // other browsers use a normal file picker and Save downloads a copy
   async openFile(): Promise<void> {
-    const picker = (window as unknown as { showOpenFilePicker?: (o: object) => Promise<FileSystemFileHandle[]> })
-      .showOpenFilePicker;
-    if (!picker) {
-      this.pickWithInput();
-      return;
+    // Several files can be picked: each one opens in its own tab. The dialog starts in the last folder used.
+    for (const { file, handle } of await pickPdfFiles(true)) {
+      await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name, handle);
     }
-    try {
-      // Several files can be picked: each one opens in its own tab
-      const handles = await picker({ multiple: true, types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }] });
-      for (const handle of handles) {
-        const file = await handle.getFile();
-        await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name, handle);
-      }
-    } catch {
-      // cancelled
-    }
-  }
-
-  // Safari and Firefox: a hidden file input made on the fly
-  private pickWithInput(): void {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/pdf,.pdf';
-    input.multiple = true;
-    input.addEventListener('change', async () => {
-      for (const file of [...(input.files ?? [])]) await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name, null);
-    });
-    input.click();
   }
 
   // Drop a PDF on the window. The file and its handle are read before any await:

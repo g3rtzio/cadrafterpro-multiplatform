@@ -3,6 +3,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { DrawingStore } from '../../services/drawing.store/drawing.store';
+import { byFileName, pickPdfFiles } from '../../services/file-picker/file-picker';
 import { renderRegion } from '../../services/pdf-render/pdf-render';
 import { pageShapes } from '../../services/shapes/shapes';
 import { PageLabeler } from '../../services/page-labels/page-labels';
@@ -279,12 +280,13 @@ export class Thumbnails {
     if (event.dataTransfer) event.dataTransfer.dropEffect = this.dragging ? 'move' : 'copy';
   }
 
-  // Below the last page: drop at the end
+  // Anywhere in the list that isn't on a page (below the last one): drop at the end
   onListDragOver(event: DragEvent): void {
     if (!this.accepts(event)) return;
     event.preventDefault();
     event.stopPropagation();
-    if ((event.target as HTMLElement).classList.contains('list-end')) this.dropAt.set(this.store.pageCount);
+    if (!(event.target as HTMLElement).closest('.slot')) this.dropAt.set(this.store.pageCount);
+    if (event.dataTransfer) event.dataTransfer.dropEffect = this.dragging ? 'move' : 'copy';
   }
 
   onDragLeave(event: DragEvent): void {
@@ -298,15 +300,22 @@ export class Thumbnails {
     if (!this.accepts(event)) return;
     event.preventDefault();
     event.stopPropagation();                         // the window would open the PDF instead
-    if (at === null) return;
     if (this.dragging) {
+      if (at === null) return;
       const moving = this.dragging;
       this.dragging = null;
       this.moveTo(at, moving);
       return;
     }
-    const file = [...(event.dataTransfer?.files ?? [])].find(f => f.name.toLowerCase().endsWith('.pdf'));
-    if (file) file.arrayBuffer().then(buffer => this.store.requestInsertPages(new Uint8Array(buffer), file.name, at));
+    // PDFs dragged from Explorer (one or several): sorted by name, as Explorer lists them
+    const files = [...(event.dataTransfer?.files ?? [])].filter(f => f.name.toLowerCase().endsWith('.pdf')).sort(byFileName);
+    if (files.length === 0) return;
+    void this.insertFiles(files, at ?? this.store.pageCount);
+  }
+
+  private async insertFiles(files: File[], at: number): Promise<void> {
+    const read = await Promise.all(files.map(async f => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+    await this.store.requestInsertPages(read, at);
   }
 
   private accepts(event: DragEvent): boolean {
@@ -315,14 +324,9 @@ export class Thumbnails {
   }
 
   // MARK: - Insert pages from another PDF
-  pickFile(at: number): void {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/pdf,.pdf';
-    input.addEventListener('change', async () => {
-      const file = input.files?.[0];
-      if (file) await this.store.requestInsertPages(new Uint8Array(await file.arrayBuffer()), file.name, at);
-    });
-    input.click();
+  // One or several PDFs, from the last folder used
+  async pickFile(at: number): Promise<void> {
+    const picked = await pickPdfFiles(true);
+    if (picked.length) await this.insertFiles(picked.map(p => p.file).sort(byFileName), at);
   }
 }
