@@ -133,6 +133,9 @@ export interface LivePoints { pageIndex: number; points: Pt[]; }
 const PALETTE = [COLORS.green, COLORS.blue, COLORS.orange, COLORS.red, COLORS.purple,
   COLORS.pink, COLORS.yellow, COLORS.cyan, COLORS.mint, COLORS.brown];
 
+// Answer to "Save the changes before closing?"
+export type CloseAnswer = 'save' | 'discard' | 'cancel';
+
 @Injectable({ providedIn: 'root' })
 export class DrawingStore {
   // MARK: - Change tracking
@@ -155,6 +158,7 @@ export class DrawingStore {
   loading = false;
   private extraRenderers: PDFDocumentProxy[] = [];  // pdf.js documents of inserted pages (blank or from other files)
   private pagesChanged = false;                    // pages added, deleted or moved since opening (labels rewritten on save)
+  private modified = false;                        // changes not saved yet (asks before closing)
 
   get pageCount(): number { return this.pages.length; }
   get hasDocument(): boolean { return this.lib !== null; }
@@ -306,6 +310,7 @@ export class DrawingStore {
       this.tabOrder.push(this.activeTab = uid());
       this.paneDocs[this.splitMode === 'single' ? 0 : this.activePane] = this.activeTab;
       this.pagesChanged = false;
+      this.modified = false;
       this.overlay.set(null);
       this.snapshotMode = 'none';
       this.insertRequest = null;
@@ -345,9 +350,68 @@ export class DrawingStore {
   }
 
   // MARK: - Close the drawing
-  // Leaves the app empty, as when it starts (changes not saved are lost)
+  // File > Close / Ctrl+W: closes the active document (asks first when it has changes not saved)
   closeDocument(): void {
-    if (this.hasDocument) this.closeTab(this.activeTab);
+    if (this.hasDocument) void this.requestCloseTab(this.activeTab);
+  }
+
+  // MARK: - Asking to save before closing
+  // The open question: the document's name; Save / Don't Save / Cancel answer it
+  closePrompt: { name: string } | null = null;
+  private closeAnswer: ((answer: CloseAnswer) => void) | null = null;
+  private closingWindow = false;
+
+  // Documents with changes not saved
+  get hasUnsavedChanges(): boolean {
+    return this.tabs.some(t => t.edited);
+  }
+
+  // Closes a tab; a document with changes not saved asks first. Returns false when cancelled.
+  async requestCloseTab(id: string): Promise<boolean> {
+    const tab = this.tabs.find(t => t.id === id);
+    if (!tab) return true;
+    if (!tab.edited) {
+      this.closeTab(id);
+      return true;
+    }
+    // Save works on the active document: show this one while asking
+    if (!tab.active) this.switchTab(id);
+    const answer = await this.askToSave(tab.name);
+    if (answer === 'cancel') return false;
+    if (answer === 'save' && !(await this.save())) return false;   // save failed or Save As cancelled
+    this.closeTab(id);
+    return true;
+  }
+
+  // Closing the window (Electron): asks for every document with changes, one after the other.
+  // True when nothing is left to save; false when the person cancelled.
+  async requestCloseWindow(): Promise<boolean> {
+    if (this.closingWindow) return false;                   // already asking
+    this.closingWindow = true;
+    try {
+      for (const tab of this.tabs.filter(t => t.edited)) {
+        if (!(await this.requestCloseTab(tab.id))) return false;
+      }
+      return true;
+    } finally {
+      this.closingWindow = false;
+    }
+  }
+
+  private askToSave(name: string): Promise<CloseAnswer> {
+    this.closeAnswer?.('cancel');                           // a question still open is cancelled
+    this.closePrompt = { name };
+    this.touch();
+    return new Promise(resolve => this.closeAnswer = resolve);
+  }
+
+  // Button picked in the dialog
+  answerClose(answer: CloseAnswer): void {
+    const resolve = this.closeAnswer;
+    this.closeAnswer = null;
+    this.closePrompt = null;
+    this.touch();
+    resolve?.(answer);
   }
 
   // Leaves the app empty (the active tab's document is destroyed)
@@ -355,6 +419,7 @@ export class DrawingStore {
     this.renderer?.destroy();
     this.destroyExtraRenderers();
     this.pagesChanged = false;
+    this.modified = false;
     this.overlay.set(null);
     this.snapshotMode = 'none';
     this.insertRequest = null;
@@ -401,7 +466,7 @@ export class DrawingStore {
   private activeTab = '';
   private parked = new Map<string, Record<string, unknown>>();
   private static readonly DOC_FIELDS = [
-    'lib', 'renderer', 'pages', 'fileName', 'fileHandle', 'pageNames', 'pageLabels', 'extraRenderers', 'pagesChanged',
+    'lib', 'renderer', 'pages', 'fileName', 'fileHandle', 'pageNames', 'pageLabels', 'extraRenderers', 'pagesChanged', 'modified',
     'measurements', 'markups', 'removed', 'pageScales', 'viewports', 'countSession', 'snapIndexes',
     'pageIndexes', 'history', 'selection', 'extraPages', 'extraPagesOf', 'pageAnchor',
     'undoStack', 'redoStack', 'lastCheckpoint', 'documentId', 'estimate', 'selectedEstimateKey', 'extraEstimateKeys',
@@ -413,7 +478,7 @@ export class DrawingStore {
       return {
         id, active: id === this.activeTab,
         name: String(state['fileName'] ?? ''),
-        edited: ((state['undoStack'] as unknown[]) ?? []).length > 0,
+        edited: !!state['modified'],
       };
     });
   }
@@ -568,6 +633,7 @@ export class DrawingStore {
       return;
     }
     this.lastCheckpoint = { key, time: now };
+    this.modified = true;
     this.undoStack.push(this.snapshot());
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
@@ -577,6 +643,7 @@ export class DrawingStore {
     const snap = this.undoStack.pop();
     if (!snap) return;
     this.redoStack.push(this.snapshot());
+    this.modified = true;
     this.restore(snap);
   }
 
@@ -584,6 +651,7 @@ export class DrawingStore {
     const snap = this.redoStack.pop();
     if (!snap) return;
     this.undoStack.push(this.snapshot());
+    this.modified = true;
     this.restore(snap);
   }
 
@@ -1556,8 +1624,8 @@ export class DrawingStore {
   // Save: overwrites the file that was opened, with no dialog.
   // Only when the browser gave no file handle (opened by an old browser or by a drop without a handle)
   // the first Save asks where to save; from then on Save writes to that file.
-  async save(): Promise<void> {
-    if (!this.lib) return;
+  async save(): Promise<boolean> {
+    if (!this.lib) return false;
     this.finishCurrentMeasurement();
     const handle = this.fileHandle;
     if (!handle || !('createWritable' in handle)) {
@@ -1568,23 +1636,26 @@ export class DrawingStore {
     }
     if (!(await ensureWritePermission(handle))) {
       this.showToast(`No permission to write ${this.fileName}`, true);
-      return;
+      return false;
     }
     try {
       const bytes = await this.write();
       const writable = await handle.createWritable();
       await writable.write(bytes as BlobPart);
       await writable.close();
+      this.markSaved();
       this.showToast(`Saved ${this.fileName}`);
+      return true;
     } catch (error) {
       console.error(error);
       this.showToast(`Couldn't save ${this.fileName}`, true);
+      return false;
     }
   }
 
   // Save As: saves a copy with another name; from then on Save writes to the copy
-  async saveAs(): Promise<void> {
-    if (!this.lib) return;
+  async saveAs(): Promise<boolean> {
+    if (!this.lib) return false;
     this.finishCurrentMeasurement();
     const suggested = this.fileName || 'Takeoff.pdf';
     const picker = (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker;
@@ -1592,12 +1663,13 @@ export class DrawingStore {
       // Safari and Firefox: the browser downloads the file
       const bytes = await this.write();
       downloadFile(new Blob([bytes as BlobPart], { type: 'application/pdf' }), suggested);
+      this.markSaved();
       this.showToast(`Downloaded ${suggested}`);
-      return;
+      return true;
     }
     // Opens in the folder of this file (or the last folder used)
     const handle = await pickSavePdf(suggested, this.fileHandle);
-    if (!handle) return;                                        // cancelled
+    if (!handle) return false;                                  // cancelled
     try {
       const bytes = await this.write();
       const writable = await handle.createWritable();
@@ -1605,11 +1677,27 @@ export class DrawingStore {
       await writable.close();
       this.fileHandle = handle;
       this.fileName = handle.name;
+      this.markSaved();
       this.showToast(`Saved ${handle.name}`);
+      return true;
     } catch (error) {
       console.error(error);
       this.showToast(`Couldn't save ${handle.name}`, true);
+      return false;
     }
+  }
+
+  // Everything is in the file now: no question when closing (and the tab loses its dot)
+  private markSaved(): void {
+    this.modified = false;
+    this.touch();
+  }
+
+  // A change made outside the Undo steps (for example the OCR text layer) still has to be saved
+  markModified(): void {
+    if (!this.hasDocument) return;
+    this.modified = true;
+    this.touch();
   }
 
   // Writes the PDF with the measurements as Revu markups, the page scales and the viewports
@@ -2087,7 +2175,7 @@ export class DrawingStore {
       this.pageSwapListeners.forEach(listener => listener(old, next));
     }
     this.pages = [...this.pages];
-    this.pagesChanged = true;
+    this.pagesChanged = this.modified = true;
     const turn = degrees === 180 || degrees === -180 ? '180°' : degrees > 0 ? 'right' : 'left';
     this.showToast(list.length === 1 ? `${this.pageName(list[0])} rotated ${turn}` : `${list.length} pages rotated ${turn}`);
     this.touch();
@@ -2230,7 +2318,7 @@ export class DrawingStore {
         if (!this.viewports.some(v => v.pageIndex === index)) this.viewports.push(...data.viewports);
         this.snapIndexes.delete(index);
       }
-      this.pagesChanged = true;
+      this.pagesChanged = this.modified = true;
       const parts = [`${pairs.length} page${pairs.length === 1 ? '' : 's'} replaced from ${fileName}`];
       if (append.length) parts.push(`${append.length} new page${append.length === 1 ? '' : 's'} added at the end`);
       if (resized) parts.push(`${resized} with a different size: check the markups`);
@@ -2290,7 +2378,7 @@ export class DrawingStore {
     this.pages = slots.map(slot => 'old' in slot ? slot.geometry ?? oldGeometry[slot.old] : slot.geometry);
     this.pageLabels = slots.map(slot => 'old' in slot ? (numbered ? '' : oldLabels[slot.old] ?? '') : slot.label);
     this.remapPageIndexes(map);
-    this.pagesChanged = true;
+    this.pagesChanged = this.modified = true;
     this.touch();
   }
 
@@ -3071,6 +3159,7 @@ export class DrawingStore {
 
   // The estimate is saved inside the PDF on Save, and kept in this browser meanwhile
   estimateChanged(): void {
+    if (this.hasDocument) this.modified = true;
     if (this.fileName) writeSetting(`estimate:${this.fileName}`, JSON.stringify(this.estimate));
     this.touch();
   }

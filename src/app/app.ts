@@ -26,6 +26,7 @@ import { PageLabelsDialog } from './components/page-labels-dialog/page-labels-di
 import { RotatePagesDialog } from './components/rotate-pages-dialog/rotate-pages-dialog';
 import { ExtractPagesDialog } from './components/extract-pages-dialog/extract-pages-dialog';
 import { PitchDialog } from './components/pitch-dialog/pitch-dialog';
+import { SaveChangesDialog } from './components/save-changes-dialog/save-changes-dialog';
 
 // Main window — port of ContentView.swift:
 // left the element tree or the page thumbnails, ribbon on top, the plan (one or two panes)
@@ -41,15 +42,19 @@ function readSplit(): number {
   }
 }
 
+// Running inside the Electron window (it asks before closing through cadrafterRequestClose)
+const IS_DESKTOP = /\bElectron\//.test(navigator.userAgent);
+
 @Component({
   selector: 'app-root',
-  imports: [Icon, Resizable, SlipSheetDialog, InsertPagesDialog, PageLabelsDialog, RotatePagesDialog, ExtractPagesDialog, PitchDialog, OcrPanel, ColumnsDialog, FilterBuilder, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
+  imports: [Icon, Resizable, SlipSheetDialog, InsertPagesDialog, PageLabelsDialog, RotatePagesDialog, ExtractPagesDialog, PitchDialog, SaveChangesDialog, OcrPanel, ColumnsDialog, FilterBuilder, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'app',
     '(document:keydown)': 'onKey($event)',
     '(dragover)': '$event.preventDefault()',
     '(drop)': 'onDrop($event)',
+    '(window:beforeunload)': 'onBeforeUnload($event)',
   },
   template: `
     @let s = store.watch();
@@ -85,10 +90,10 @@ function readSplit(): number {
           <div class="doc-tabs" role="tablist">
             @for (t of s.tabs; track t.id) {
               <div class="doc-tab" role="tab" [class.active]="t.active" [attr.aria-selected]="t.active" [title]="t.name"
-                   (click)="s.switchTab(t.id)" (auxclick)="$event.button === 1 && s.closeTab(t.id)">
+                   (click)="s.switchTab(t.id)" (auxclick)="$event.button === 1 && s.requestCloseTab(t.id)">
                 <span class="doc-tab-name">{{ t.name }}</span>
                 @if (t.edited) { <span class="doc-tab-dot" title="Edited"></span> }
-                <button class="doc-tab-close" title="Close" (click)="$event.stopPropagation(); s.closeTab(t.id)">
+                <button class="doc-tab-close" title="Close" (click)="$event.stopPropagation(); s.requestCloseTab(t.id)">
                   <app-icon class="icon small" name="close" />
                 </button>
               </div>
@@ -189,6 +194,8 @@ function readSplit(): number {
     @if (s.columnsOpen) {
       <app-columns-dialog />
     }
+    <!-- Closing a document with changes not saved: Save / Don't Save / Cancel -->
+    @if (s.closePrompt) { <app-save-changes-dialog /> }
   `,
 })
 export class App {
@@ -202,6 +209,21 @@ export class App {
   readonly sidebarFilter = signal('');               // search box above the Elements / Pages list
 
   constructor() {
+    // Desktop app: the window's X asks the page first (electron/main.cjs calls this before closing).
+    // It answers true when the window can close now; otherwise it shows Save / Don't Save / Cancel
+    // for each document with changes and closes the window itself when every one is answered.
+    (window as unknown as { cadrafterRequestClose?: () => boolean }).cadrafterRequestClose = () => {
+      if (!this.store.hasUnsavedChanges) return true;
+      void this.store.requestCloseWindow().then(done => { if (done) window.close(); });
+      return false;
+    };
+  }
+
+  // In a browser tab (not the desktop app) the browser's own "Leave site?" question protects the changes
+  onBeforeUnload(e: BeforeUnloadEvent): void {
+    if (IS_DESKTOP || !this.store.hasUnsavedChanges) return;
+    e.preventDefault();
+    e.returnValue = '';
   }
 
   // Share of the first view when the plan is split (remembered on this computer)

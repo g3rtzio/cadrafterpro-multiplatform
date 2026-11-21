@@ -1,16 +1,16 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { Measurement } from '../../models/elements';
-import { COLORS, Pt, Rect, TakeoffItem } from '../../models/takeoff';
+import { COLORS, Pt, Rect, TakeoffItem, polygonArea, quantityText } from '../../models/takeoff';
 import { DrawingStore } from '../drawing.store/drawing.store';
 import { PageGeometry, renderRegion } from '../pdf-render/pdf-render';
 import { TextSearch } from '../text-search/text-search';
 
 // AI assistant of the right side bar: connects to Claude, ChatGPT or Gemini with the user's own
-// API key. Once connected it is a chat about the open drawing (the current page can go along as
+// API key, or to a local model server (Ollama, LM Studio) on this computer. Once connected it is a chat about the open drawing (the current page can go along as
 // a picture plus its text), and it counts takeoff items: it shows the model the sheet and the
 // count items, and puts the counts the model finds straight into the drawing.
 
-export type AiProvider = 'claude' | 'openai' | 'gemini';
+export type AiProvider = 'claude' | 'openai' | 'gemini' | 'local';
 export type AiDetail = 1 | 2 | 3;            // the page is sent as 1, 2×2 or 3×3 pictures
 
 export interface AiProviderInfo {
@@ -41,7 +41,31 @@ export const AI_PROVIDERS: AiProviderInfo[] = [
     models: ['gemini-3.1-pro-preview'],
     keyUrl: 'https://aistudio.google.com/apikey', keyHint: 'AIza…',
   },
+  {
+    // Local models (Qwen, Gemma…) through an OpenAI-compatible server. Its "key" is the server URL.
+    id: 'local', name: 'Local', defaultModel: '',
+    models: [],
+    keyUrl: 'https://ollama.com/download', keyHint: 'http://localhost:11434/v1',
+  },
 ];
+
+// OpenAI-compatible servers that run models on this computer
+export const LOCAL_SERVERS = [
+  { name: 'Ollama', url: 'http://localhost:11434/v1' },
+  { name: 'LM Studio', url: 'http://localhost:1234/v1' },
+];
+
+const OPENAI_BASE = 'https://api.openai.com/v1';
+
+// "localhost:11434" → "http://localhost:11434/v1". A full endpoint pasted from the server's
+// screen ("…/v1/chat/completions", "…/v1/models") is cut back to "…/v1".
+function localBase(url: string): string {
+  let base = url.trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(base)) base = 'http://' + base;
+  const v1 = /^(.*?\/v1)(\/.*)?$/i.exec(base);
+  if (v1) return v1[1];
+  return base.replace(/\/(chat\/completions|completions|models)$/i, '') + '/v1';
+}
 
 interface StoredSettings {
   provider: AiProvider;
@@ -51,23 +75,30 @@ interface StoredSettings {
 }
 
 // One picture of the page sent to the model
-interface Tile { region: Rect; scale: number; width: number; height: number; jpeg: string; }
+// `core`: the part of the page the tile owns (its region without the overlap with its neighbours)
+interface Tile { region: Rect; core: Rect; scale: number; width: number; height: number; jpeg: string; }
 
 // What the model answers (the same shape for the three providers)
 interface AiMark { tile: number; x: number; y: number; text_id: number; }
 interface AiAnswer { items: { item_id: string; marks: AiMark[] }[]; notes: string; }
 
+// What the model answers when it traces lines (walls…) or areas (rooms…): polylines or outlines in tile pixels
+interface AiShape { tile: number; points: { x: number; y: number }[]; }
+interface AiShapeAnswer { items: { item_id: string; shapes: AiShape[] }[]; notes: string; }
+
 export interface AiRunResult {
   pageIndex: number;
-  added: { name: string; color: string; count: number }[];
+  added: { name: string; color: string; count: number; total?: string }[];   // total: length or area traced
   skipped: number;                           // already counted at the same spot
   notes: string;
 }
 
 // MARK: - Chat
-// The model can propose a count; the app shows a button that runs it
+// The model can propose a count, a line tracing (walls…) or an area tracing (rooms…);
+// the app shows a button that runs it
 export interface ChatCountAction {
-  items: string[];                           // takeoff item names (new names become new count items)
+  kind: 'count' | 'linear' | 'area';         // count symbols, trace Linear lines or trace Areas
+  items: string[];                           // takeoff item names (new names become new items of that kind)
   pages: 'current' | 'all';
   instructions: string;
   pageIndex: number;                         // the current page when it was proposed
@@ -88,18 +119,30 @@ export interface ChatMessage {
 // One turn of the conversation as the providers receive it
 interface ChatTurn { role: 'user' | 'assistant'; text: string; images: string[]; }
 
-const ACTION_BLOCK = /```takeoff-count\s*([\s\S]*?)(```|$)/;
+// The action block: ```takeoff-count / takeoff-linear / takeoff-area, or a plain ```json block with "items"
+// (small local models often drop the label)
+const ACTION_BLOCK = /```(takeoff-(?:count|linear|area)|json)?[ \t]*\r?\n?(\s*\{[\s\S]*?"items"[\s\S]*?)(```|$)/;
 const CHAT_HISTORY = 30;                     // messages sent back to the model
 const CHAT_WORDS = 2500;                     // words of page text sent with a message
 
 const CHAT_PROMPT = `You are the AI assistant of CadrafterPro, a construction takeoff and estimating app (similar to PlanSwift and Bluebeam). You chat with an estimator about the drawing they have open.
 - Answer in the same language the user writes in. Be concise and practical; use short lists when they help.
 - When a page is attached you see a picture of the sheet and the text printed on it. Read dimensions, notes, schedules, scales, room names and tags from them. If something is too small to read, say so.
-- You cannot change the drawing yourself. To count symbols or tags on the drawing and add them to the takeoff, end your answer with exactly one block like this:
+- You cannot change or measure the drawing yourself. Never invent counts, lengths or areas and never say you counted, measured, traced or added anything: the app does that only when the user presses the button that appears under your answer.
+- When the user asks to count, trace or measure something on the drawing, write one short sentence and end your answer with exactly ONE action block. Use the label after the three backticks exactly as shown:
+  Count symbols or tags:
 \`\`\`takeoff-count
-{"items":["Duplex Outlet","Door D1"],"pages":"current","instructions":"Duplex Outlet = circle with two parallel lines; Door D1 = the D1 tags"}
+{"kind":"count","items":["Duplex Outlet","Door D1"],"pages":"current","instructions":"Duplex Outlet = circle with two parallel lines; Door D1 = the D1 tags"}
 \`\`\`
-  Use the names of the takeoff items listed below when they match; a new name creates a new count item. "pages" is "current" or "all". The app shows the user a button to run the count, so never say the counts were already added.
+  Trace walls or other runs measured in length (curbs, footings, pipes, fences, baseboard…) with the Linear tool:
+\`\`\`takeoff-linear
+{"kind":"linear","items":["Interior Wall"],"pages":"current","instructions":"interior partitions drawn as thin double lines; skip exterior walls"}
+\`\`\`
+  Trace the floor area of rooms or zones (flooring, ceilings, slabs, paint areas…) with the Area tool:
+\`\`\`takeoff-area
+{"kind":"area","items":["Training Room 311"],"pages":"current","instructions":"the room labeled TRAINING 311 in the lower plan, inside face of its walls"}
+\`\`\`
+  "items" are takeoff item names: use the names listed below when they match; a new name creates a new item of that kind. "pages" is "current" or "all". "instructions" says what to look for and where, in the user's words plus what you see on the sheet.
 - Quantities in the takeoff are in EA (counts), FT (lengths) and SF (areas) with the scale of each page.`;
 
 const SETTINGS_KEY = 'cadrafterpro.ai';
@@ -155,6 +198,83 @@ How to mark:
 Answer with JSON only, no other text, in this shape:
 {"items":[{"item_id":"I1","marks":[{"tile":1,"x":120,"y":340,"text_id":-1}]}],"notes":"short summary for the estimator"}
 Write notes in the same language as the user's instructions (English if there are none).`;
+
+// JSON schema of a line tracing answer
+const SHAPE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['items', 'notes'],
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['item_id', 'shapes'],
+        properties: {
+          item_id: { type: 'string' },
+          shapes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['tile', 'points'],
+              properties: {
+                tile: { type: 'integer' },
+                points: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['x', 'y'],
+                    properties: { x: { type: 'number' }, y: { type: 'number' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    notes: { type: 'string' },
+  },
+};
+
+const LINE_PROMPT = `You are the takeoff assistant of CadrafterPro, a construction estimating app.
+You receive one sheet of a construction drawing as one or more pictures ("tiles") and a list of linear takeoff items (for example walls). For each takeoff item, trace every run of it on the plan as polylines, the way an estimator measures them with a Linear tool.
+
+How to trace:
+- Walls are usually drawn as two parallel lines (sometimes filled or hatched). Trace ONE polyline along the middle of the wall (its centerline), not each face.
+- A polyline is a list of corner points: { "x", "y" } pixel positions in its tile (origin at the top left corner of the tile). Put a point at every corner and at both ends; straight runs need only their two ends.
+- Follow a wall around its corners in one polyline while it continues; start a new polyline at a tee or where the run ends. Keep going through doors and windows unless the instructions say to stop at openings.
+- Each polyline lies in one tile. The tiles may overlap a little: a run that crosses into another tile may continue there as a new polyline; the app trims the overlap.
+- Do not trace what the estimator already traced unless the instructions ask for it.
+- Do not trace dimension lines, grid lines, leaders, text, hatching, furniture, legends, title blocks or details: only the elements placed on the plan.
+- Be precise: points must sit on the drawing, not approximately near it. If you are not sure an item is on this sheet, leave its lines empty and say why in notes.
+
+Answer with JSON only, no other text, in this shape:
+{"items":[{"item_id":"I1","shapes":[{"tile":1,"points":[{"x":120,"y":340},{"x":620,"y":340},{"x":620,"y":900}]}]}],"notes":"short summary for the estimator"}
+Write notes in the same language as the user's instructions (English if there are none).`;
+
+const AREA_PROMPT = `You are the takeoff assistant of CadrafterPro, a construction estimating app.
+You receive one sheet of a construction drawing as a picture ("tile") and a list of area takeoff items (for example rooms, floor finishes, slabs). For each takeoff item, trace the outline of every area it stands for, the way an estimator measures it with an Area tool.
+
+How to trace:
+- An outline is a closed polygon: the list of its corner points { "x", "y" } in pixels of the tile (origin at the top left corner), going around the area once. Do not repeat the first point at the end.
+- For a room, follow the inside face of its walls and put a point at every corner, including the small jogs around columns and recesses. Close the outline across door openings along the wall line.
+- Find the room by its name or number tag; the tag sits inside the room. When the same room appears in more than one plan on the sheet, trace it only in the plan the instructions name, or in the main floor plan.
+- Do not trace legends, schedules, title blocks, details or keys.
+- Be precise: points must sit on the wall lines, not approximately near them. If you cannot find the area, leave its shapes empty and say why in notes.
+
+Answer with JSON only, no other text, in this shape:
+{"items":[{"item_id":"I1","shapes":[{"tile":1,"points":[{"x":120,"y":340},{"x":620,"y":340},{"x":620,"y":900},{"x":120,"y":900}]}]}],"notes":"short summary for the estimator"}
+Write notes in the same language as the user's instructions (English if there are none).`;
+
+// What one vision request asks for: its system prompt and the JSON schema of the answer
+interface AskTask { system: string; schema: object; }
+const COUNT_TASK: AskTask = { system: SYSTEM_PROMPT, schema: ANSWER_SCHEMA };
+const LINE_TASK: AskTask = { system: LINE_PROMPT, schema: SHAPE_SCHEMA };
+const AREA_TASK: AskTask = { system: AREA_PROMPT, schema: SHAPE_SCHEMA };
 
 @Injectable({ providedIn: 'root' })
 export class AiAssistant {
@@ -239,7 +359,7 @@ export class AiAssistant {
     const provider = this.provider(), key = this.apiKey(), model = this.model();
     this.status.set(null);
     if (!key) {
-      this.status.set({ ok: false, text: 'Enter an API key first.' });
+      this.status.set({ ok: false, text: provider === 'local' ? 'Enter the server URL first.' : 'Enter an API key first.' });
       return false;
     }
     this.busy.set(true);
@@ -250,8 +370,28 @@ export class AiAssistant {
         const m = await client.models.retrieve(model);
         this.status.set({ ok: true, text: `Connected to ${m.display_name || model}.` });
       } else if (provider === 'openai') {
-        await getJson(`https://api.openai.com/v1/models/${encodeURIComponent(model)}`, { Authorization: `Bearer ${key}` });
+        await getJson(`${OPENAI_BASE}/models/${encodeURIComponent(model)}`, { Authorization: `Bearer ${key}` });
         this.status.set({ ok: true, text: `Connected to ChatGPT (${model}).` });
+      } else if (provider === 'local') {
+        // The models installed on the server (Ollama: "ollama pull qwen3")
+        const base = localBase(key);
+        const data = await getJson(`${base}/models`, {}) as { data?: { id: string }[] };
+        // Embedding models can't chat: leave them out of the list
+        const ids = (data.data ?? []).map(m => m.id).filter(id => !/embed/i.test(id)).sort();
+        this.available.update(a => ({ ...a, local: ids }));
+        if (!ids.length) {
+          this.status.set({ ok: false, text: 'The server has no models yet. In Ollama: ollama pull qwen3 (or gemma3).' });
+          return false;
+        }
+        let chosen = model;
+        if (!chosen) {
+          chosen = ids[0];
+          this.setModel(chosen);
+        } else if (!ids.includes(chosen)) {
+          this.status.set({ ok: false, text: `${chosen} is not installed on the server. Installed: ${ids.slice(0, 8).join(', ')}.` });
+          return false;
+        }
+        this.status.set({ ok: true, text: `Connected to the local server (${chosen}).` });
       } else {
         // Google retires models often: read the list this key can use, then check the chosen one
         const ids = await listGeminiModels(key);
@@ -267,7 +407,11 @@ export class AiAssistant {
       }
       return true;
     } catch (e) {
-      this.status.set({ ok: false, text: errorText(e) });
+      // A local server that doesn't answer is usually stopped, on another port, or blocking CORS
+      const local = provider === 'local' && e instanceof TypeError;
+      this.status.set({ ok: false, text: local
+        ? `No answer from ${localBase(key)}. Check that the server is running on that port; in LM Studio also turn on "Enable CORS" in the server settings.`
+        : errorText(e) });
       return false;
     } finally {
       this.busy.set(false);
@@ -292,7 +436,7 @@ export class AiAssistant {
     this.chatAbort = abort;
     let raw = '';
     try {
-      if (!this.apiKey()) throw new Error('Connect an AI provider first (API key).');
+      if (!this.apiKey()) throw new Error('Connect an AI provider first (API key or local server).');
       const turns = await this.chatTurns(page?.index);
       if (abort.signal.aborted) return;
       const onText = (delta: string) => {
@@ -301,9 +445,10 @@ export class AiAssistant {
       };
       const provider = this.provider(), key = this.apiKey(), model = this.model(), system = this.chatSystem();
       if (provider === 'claude') await chatClaude(key, model, system, turns, onText, abort.signal);
-      else if (provider === 'openai') await chatOpenAI(key, model, system, turns, onText, abort.signal);
+      else if (provider === 'openai') await chatOpenAI(OPENAI_BASE, key, model, system, turns, onText, abort.signal);
+      else if (provider === 'local') await chatOpenAI(localBase(key), '', model, system, turns, onText, abort.signal);
       else await chatGemini(key, model, system, turns, onText, abort.signal);
-      const action = parseAction(raw, pageIndex);
+      const action = parseAction(raw, pageIndex, question);
       this.patch(answerId, { raw, text: visibleText(raw) || (action ? '' : '(No answer)'), streaming: false, action });
     } catch (e) {
       if (abort.signal.aborted) {
@@ -331,21 +476,23 @@ export class AiAssistant {
     this.chat.set([]);
   }
 
-  // Runs a count the model proposed: missing items are created, then the counts are added and
-  // summed up in the conversation
+  // Runs the action the model proposed: missing items are created, then the counts, lines or areas
+  // are added and summed up in the conversation
   async runAction(messageId: number): Promise<void> {
     const s = this.store;
     const message = this.chat().find(m => m.id === messageId);
     const action = message?.action;
     if (!action || action.state !== 'ready' || this.busy() || !s.hasDocument) return;
     const palette = [COLORS.red, COLORS.blue, COLORS.green, COLORS.orange, COLORS.purple];
+    const kind = action.kind === 'linear' ? 'length' : action.kind === 'area' ? 'area' : 'count';
+    const what = kind === 'area' ? 'area' : 'line';
     const ids: string[] = [];
     for (const name of action.items) {
-      let item = s.items.find(i => i.kind === 'count' && i.name.trim().toLowerCase() === name.trim().toLowerCase());
+      let item = s.items.find(i => i.kind === kind && i.name.trim().toLowerCase() === name.trim().toLowerCase());
       if (!item) {
-        s.addItem(name.trim(), 'count', palette[s.items.length % palette.length]);
+        s.addItem(name.trim(), kind, palette[s.items.length % palette.length]);
         item = s.items[s.items.length - 1];
-        s.cancelTool();                   // addItem starts measuring with it; here the AI places the counts
+        s.cancelTool();                   // addItem starts measuring with it; here the AI places the marks
         s.touch();
       }
       if (!ids.includes(item.id)) ids.push(item.id);
@@ -353,19 +500,25 @@ export class AiAssistant {
     const pageIndex = Math.min(action.pageIndex, s.pageCount - 1);
     const pages = action.pages === 'all' ? Array.from({ length: s.pageCount }, (_, i) => i) : [pageIndex];
     this.patch(messageId, { action: { ...action, state: 'running' } });
-    await this.countItems(ids, pages, action.instructions, 2, true);
+    // Areas go as one picture of the whole sheet so a room is never cut between two pictures
+    if (kind !== 'count') await this.traceShapes(kind, ids, pages, action.instructions, kind === 'area' ? 1 : 2);
+    else await this.countItems(ids, pages, action.instructions, 2, true);
     this.patch(messageId, { action: { ...action, state: 'done' } });
     const lines: string[] = [];
     if (this.error()) {
-      lines.push(`The count didn't finish: ${this.error()}`);
+      lines.push(`${kind === 'count' ? 'The count' : 'The tracing'} didn't finish: ${this.error()}`);
     } else {
       for (const r of this.results()) {
         lines.push(`**${s.pageName(r.pageIndex)}**`);
-        for (const a of r.added) lines.push(`- ${a.name}: ${a.count} EA added`);
-        if (r.skipped) lines.push(`- ${r.skipped} already counted, skipped`);
+        for (const a of r.added) {
+          lines.push(kind === 'count' ? `- ${a.name}: ${a.count} EA added` : `- ${a.name}: ${a.count} ${what}${a.count === 1 ? '' : 's'} added (${a.total})`);
+        }
+        if (r.skipped) lines.push(kind === 'count' ? `- ${r.skipped} already counted, skipped` : `- ${r.skipped} ${what}${r.skipped === 1 ? '' : 's'} left out (too small or off the sheet)`);
         if (r.notes) lines.push(r.notes);
       }
-      lines.push('', 'Check the counts on the plan; Undo removes them.');
+      lines.push('', kind === 'count'
+        ? 'Check the counts on the plan; Undo removes them.'
+        : `Check the ${what}s on the plan and adjust their points where needed; Undo removes them.`);
     }
     const text = lines.join('\n');
     this.chat.update(list => [...list, { id: this.nextId++, role: 'assistant', text, raw: text, error: !!this.error() }]);
@@ -447,7 +600,7 @@ export class AiAssistant {
     const items = itemIds.map(id => s.items.find(i => i.id === id)).filter((i): i is TakeoffItem => !!i && i.kind === 'count');
     this.error.set('');
     if (!this.apiKey()) {
-      this.error.set('Connect an AI provider first (API key).');
+      this.error.set('Connect an AI provider first (API key or local server).');
       return;
     }
     if (!s.hasDocument || !items.length || !pages.length) return;
@@ -466,7 +619,7 @@ export class AiAssistant {
         if (runId !== this.run) return;
         this.progress.set(prefix + `Asking ${this.info().name}…`);
         const prompt = this.prompt(items, tiles, words, instructions, pageIndex);
-        const answer = await this.ask(tiles, prompt);
+        const answer = parseAnswer(await this.ask(tiles, prompt, COUNT_TASK));
         if (runId !== this.run) return;
         const result = this.addCounts(answer, items, tiles, words, g, pageIndex);
         this.results.update(list => [...list, result]);
@@ -483,6 +636,117 @@ export class AiAssistant {
     }
   }
 
+  // Traces the chosen linear items (walls…) or area items (rooms…) on the pages from the picture
+  // of the sheet and adds them as Linear or Area measurements (one Undo step per page)
+  async traceShapes(kind: 'length' | 'area', itemIds: string[], pages: number[], instructions: string, detail: AiDetail): Promise<void> {
+    const s = this.store;
+    const items = itemIds.map(id => s.items.find(i => i.id === id)).filter((i): i is TakeoffItem => !!i && i.kind === kind);
+    this.error.set('');
+    if (!this.apiKey()) {
+      this.error.set('Connect an AI provider first (API key or local server).');
+      return;
+    }
+    if (!s.hasDocument || !items.length || !pages.length) return;
+    const runId = ++this.run;
+    this.busy.set(true);
+    this.results.set([]);
+    try {
+      for (const [n, pageIndex] of pages.entries()) {
+        const prefix = pages.length > 1 ? `Page ${pageIndex + 1} (${n + 1} of ${pages.length}): ` : '';
+        this.progress.set(prefix + 'Preparing the sheet…');
+        const g = s.pages[pageIndex];
+        if (!g) continue;
+        const tiles = await this.tiles(g, detail);
+        if (runId !== this.run) return;
+        this.progress.set(prefix + `Asking ${this.info().name} to trace…`);
+        const prompt = this.shapePrompt(kind, items, tiles, instructions, pageIndex);
+        const answer = parseShapeAnswer(await this.ask(tiles, prompt, kind === 'area' ? AREA_TASK : LINE_TASK));
+        if (runId !== this.run) return;
+        this.results.update(list => [...list, this.addShapes(kind, answer, items, tiles, g, pageIndex)]);
+      }
+      const total = this.results().reduce((sum, r) => sum + r.added.reduce((a, b) => a + b.count, 0), 0);
+      const what = kind === 'area' ? 'area' : 'line';
+      s.showToast(`AI added ${total} ${what}${total === 1 ? '' : 's'}`);
+    } catch (e) {
+      if (runId === this.run) this.error.set(errorText(e));
+    } finally {
+      if (runId === this.run) {
+        this.busy.set(false);
+        this.progress.set('');
+      }
+    }
+  }
+
+  private shapePrompt(kind: 'length' | 'area', items: TakeoffItem[], tiles: Tile[], instructions: string, pageIndex: number): string {
+    const s = this.store;
+    const lines = [
+      `Sheet: ${s.pageName(pageIndex)} (page ${pageIndex + 1} of ${s.pageCount}).`,
+      `Tiles: ${tiles.map((t, i) => `tile ${i + 1} = ${t.width}×${t.height} px`).join('; ')}.`
+        + (tiles.length > 1 ? ` The tiles go left to right, then top to bottom (${Math.sqrt(tiles.length)}×${Math.sqrt(tiles.length)} grid).` : ''),
+      '',
+      kind === 'area' ? 'Area takeoff items to trace:' : 'Linear takeoff items to trace:',
+      ...items.map((item, i) => `- I${i + 1}: "${item.name}" (${kind === 'area' ? 'areas' : 'lines'} already traced on this sheet: ${this.countOn(item.id, pageIndex, false)})`),
+    ];
+    if (instructions.trim()) lines.push('', 'Instructions from the estimator:', instructions.trim());
+    return lines.join('\n');
+  }
+
+  // MARK: - Lines and areas into the drawing
+  // Each shape is trimmed to the part of the page its tile owns, so the overlap is not measured twice
+  private addShapes(kind: 'length' | 'area', answer: AiShapeAnswer, items: TakeoffItem[], tiles: Tile[],
+                    g: PageGeometry, pageIndex: number): AiRunResult {
+    const s = this.store;
+    const minLength = Math.max(6, Math.hypot(g.width, g.height) * 0.004);   // smaller pieces are noise (PDF points)
+    const unit = s.unitFor(kind);
+    const result: AiRunResult = { pageIndex, added: [], skipped: 0, notes: answer.notes ?? '' };
+    const made: Measurement[] = [];
+    items.forEach((item, i) => {
+      const entry = answer.items?.find(e => e.item_id === `I${i + 1}` || e.item_id === item.name);
+      const before = made.length;
+      for (const shape of entry?.shapes ?? []) {
+        const tile = tiles[(shape.tile || 1) - 1];
+        const pts = (Array.isArray(shape.points) ? shape.points : [])
+          .filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+          .map(p => ({
+            x: tile ? tile.region.x + Math.min(Math.max(p.x, 0), tile.width) / tile.scale : NaN,
+            y: tile ? tile.region.y + Math.min(Math.max(p.y, 0), tile.height) / tile.scale : NaN,
+          }));
+        if (kind === 'area' && pts.length > 3 && Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) < 1e-3) pts.pop();
+        if (!tile || pts.length < (kind === 'area' ? 3 : 2)) {
+          result.skipped++;
+          continue;
+        }
+        const pieces = kind === 'area' ? [clipPolygon(pts, tile.core)].filter(p => p.length >= 3) : clipPolyline(pts, tile.core);
+        if (!pieces.length) result.skipped++;           // all of it in the overlap: the next tile has it
+        for (const piece of pieces) {
+          const points = piece.map(p => g.toPage(p));
+          const tooSmall = kind === 'area' ? polygonArea(points) < minLength * minLength : polyLength(points) < minLength;
+          if (tooSmall) {
+            result.skipped++;
+            continue;
+          }
+          const m = new Measurement(kind, pageIndex, item.id);
+          m.name = item.name;
+          m.lineColor = item.color;
+          m.visible = item.isVisible;
+          m.lengthUnit = unit;
+          m.points = points;
+          m.contents = s.liveText(points, kind, pageIndex);
+          made.push(m);
+        }
+      }
+      const mine = made.slice(before);
+      const total = mine.reduce((sum, m) => sum + s.value(m.points, kind, pageIndex), 0);
+      result.added.push({ name: item.name, color: item.color, count: mine.length, total: quantityText(total, kind, unit) });
+    });
+    if (made.length) {
+      s.checkpoint();
+      s.measurements.push(...made);
+      s.touch();
+    }
+    return result;
+  }
+
   // MARK: - Sheet for the model
   // The page split in detail × detail pictures with a small overlap
   private async tiles(g: PageGeometry, detail: AiDetail): Promise<Tile[]> {
@@ -494,11 +758,12 @@ export class AiAssistant {
         const x0 = Math.max(0, col * tw - overlap * g.width), y0 = Math.max(0, row * th - overlap * g.height);
         const x1 = Math.min(g.width, (col + 1) * tw + overlap * g.width), y1 = Math.min(g.height, (row + 1) * th + overlap * g.height);
         const region = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        const core = { x: col * tw, y: row * th, w: tw, h: th };
         const scale = Math.min(MAX_EDGE / Math.max(region.w, region.h), MAX_DPI / 72);
         const canvas = await renderRegion(g, region, scale);
         if (!canvas) throw new Error('The page could not be drawn.');
         const jpeg = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-        tiles.push({ region, scale, width: canvas.width, height: canvas.height, jpeg });
+        tiles.push({ region, core, scale, width: canvas.width, height: canvas.height, jpeg });
       }
     }
     return tiles;
@@ -545,9 +810,10 @@ export class AiAssistant {
     return lines.join('\n');
   }
 
-  private countOn(itemId: string, pageIndex: number): number {
-    return this.store.measurements.filter(m => m.itemId === itemId && m.pageIndex === pageIndex)
-      .reduce((n, m) => n + m.points.length, 0);
+  // Counts already on the sheet (points), or lines (measurements) with byPoint false
+  private countOn(itemId: string, pageIndex: number, byPoint = true): number {
+    const list = this.store.measurements.filter(m => m.itemId === itemId && m.pageIndex === pageIndex);
+    return byPoint ? list.reduce((n, m) => n + m.points.length, 0) : list.length;
   }
 
   // MARK: - Counts into the drawing
@@ -602,13 +868,15 @@ export class AiAssistant {
   }
 
   // MARK: - Providers
-  private async ask(tiles: Tile[], prompt: string): Promise<AiAnswer> {
+  // The model's answer text (JSON) for the pictures, the prompt and the task
+  private async ask(tiles: Tile[], prompt: string, task: AskTask): Promise<string> {
     const provider = this.provider(), key = this.apiKey(), model = this.model();
     let text: string;
-    if (provider === 'claude') text = await askClaude(key, model, tiles, prompt);
-    else if (provider === 'openai') text = await askOpenAI(key, model, tiles, prompt);
-    else text = await askGemini(key, model, tiles, prompt);
-    return parseAnswer(text);
+    if (provider === 'claude') text = await askClaude(key, model, tiles, prompt, task);
+    else if (provider === 'openai') text = await askOpenAI(OPENAI_BASE, key, model, tiles, prompt, task);
+    else if (provider === 'local') text = await askOpenAI(localBase(key), '', model, tiles, prompt, task);
+    else text = await askGemini(key, model, tiles, prompt, task);
+    return text;
   }
 
   // MARK: - Settings (kept only in this browser; the key is never saved in the drawing)
@@ -651,7 +919,7 @@ async function claudeClient(apiKey: string) {
   return new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
 }
 
-async function askClaude(apiKey: string, model: string, tiles: Tile[], prompt: string): Promise<string> {
+async function askClaude(apiKey: string, model: string, tiles: Tile[], prompt: string, task: AskTask): Promise<string> {
   const client = await claudeClient(apiKey);
   const modern = !/(^claude-3|-4-5|-4-1|-4-0|sonnet-4$|opus-4$)/.test(model);
   const stream = client.beta.messages.stream({
@@ -660,8 +928,8 @@ async function askClaude(apiKey: string, model: string, tiles: Tile[], prompt: s
     // If the model declines, the server retries on its default fallback model
     betas: ['server-side-fallback-2026-07-01'],
     fallbacks: 'default',
-    ...(modern ? { output_config: { effort: 'high' as const, format: { type: 'json_schema' as const, schema: ANSWER_SCHEMA } } } : {}),
-    system: SYSTEM_PROMPT,
+    ...(modern ? { output_config: { effort: 'high' as const, format: { type: 'json_schema' as const, schema: task.schema as Record<string, unknown> } } } : {}),
+    system: task.system,
     messages: [{
       role: 'user',
       content: [
@@ -707,34 +975,48 @@ async function chatClaude(apiKey: string, model: string, system: string, turns: 
   }
 }
 
-// MARK: - ChatGPT (OpenAI REST API)
-async function askOpenAI(apiKey: string, model: string, tiles: Tile[], prompt: string): Promise<string> {
-  const body = {
-    model,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          ...tiles.flatMap((t, i) => [
-            { type: 'text', text: `Tile ${i + 1}:` },
-            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${t.jpeg}`, detail: 'high' } },
-          ]),
-          { type: 'text', text: prompt },
-        ],
-      },
-    ],
-  };
-  const json = await postJson('https://api.openai.com/v1/chat/completions', { Authorization: `Bearer ${apiKey}` }, body) as {
-    choices?: { message?: { content?: string; refusal?: string } }[];
-  };
-  const message = json.choices?.[0]?.message;
+// MARK: - ChatGPT (OpenAI REST API) and local servers with the same API (Ollama, LM Studio)
+// `base`: https://api.openai.com/v1 or the local server; `apiKey` empty for local servers.
+function openAiHeaders(apiKey: string): Record<string, string> {
+  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
+
+// ChatGPT takes json_object; local servers (LM Studio, Bionic…) only json_schema or text, and some
+// none of them: each format is tried in turn when the server rejects it
+async function askOpenAI(base: string, apiKey: string, model: string, tiles: Tile[], prompt: string, task: AskTask): Promise<string> {
+  const formats: (object | null)[] = base === OPENAI_BASE
+    ? [{ type: 'json_object' }]
+    : [{ type: 'json_schema', json_schema: { name: 'answer', strict: true, schema: task.schema } }, { type: 'json_object' }, null];
+  const messages = [
+    { role: 'system', content: task.system },
+    {
+      role: 'user',
+      content: [
+        ...tiles.flatMap((t, i) => [
+          { type: 'text', text: `Tile ${i + 1}:` },
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${t.jpeg}`, detail: 'high' } },
+        ]),
+        { type: 'text', text: prompt },
+      ],
+    },
+  ];
+  let json: { choices?: { message?: { content?: string; refusal?: string } }[] } | undefined;
+  for (const [i, format] of formats.entries()) {
+    try {
+      json = await postJson(`${base}/chat/completions`, openAiHeaders(apiKey),
+        { model, messages, ...(format ? { response_format: format } : {}) }) as typeof json;
+      break;
+    } catch (e) {
+      const last = i === formats.length - 1;
+      if (last || !/\b400\b.*(response_format|json_schema|json_object|grammar)/is.test(e instanceof Error ? e.message : '')) throw e;
+    }
+  }
+  const message = json?.choices?.[0]?.message;
   if (message?.refusal) throw new Error(`ChatGPT declined: ${message.refusal}`);
   return message?.content ?? '';
 }
 
-async function chatOpenAI(apiKey: string, model: string, system: string, turns: ChatTurn[],
+async function chatOpenAI(base: string, apiKey: string, model: string, system: string, turns: ChatTurn[],
                           onText: (delta: string) => void, signal: AbortSignal): Promise<void> {
   const body = {
     model,
@@ -750,9 +1032,9 @@ async function chatOpenAI(apiKey: string, model: string, system: string, turns: 
       } : { role: t.role, content: t.text }),
     ],
   };
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch(`${base}/chat/completions`, {
     method: 'POST', signal,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    headers: { 'Content-Type': 'application/json', ...openAiHeaders(apiKey) },
     body: JSON.stringify(body),
   });
   await readEvents(response, json => {
@@ -763,9 +1045,9 @@ async function chatOpenAI(apiKey: string, model: string, system: string, turns: 
 }
 
 // MARK: - Gemini (Google Generative Language REST API)
-async function askGemini(apiKey: string, model: string, tiles: Tile[], prompt: string): Promise<string> {
+async function askGemini(apiKey: string, model: string, tiles: Tile[], prompt: string, task: AskTask): Promise<string> {
   const body = {
-    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    systemInstruction: { parts: [{ text: task.system }] },
     contents: [{
       role: 'user',
       parts: [
@@ -839,23 +1121,104 @@ function visibleText(raw: string): string {
   return raw.replace(ACTION_BLOCK, '').trim();
 }
 
-function parseAction(raw: string, pageIndex: number): ChatCountAction | undefined {
+// `question`: what the user asked, to tell the kind of action when the model left out the label
+function parseAction(raw: string, pageIndex: number, question = ''): ChatCountAction | undefined {
   const match = ACTION_BLOCK.exec(raw);
   if (!match) return undefined;
   try {
-    const json = JSON.parse(match[1].trim()) as { items?: unknown; pages?: unknown; instructions?: unknown };
+    const body = match[2].trim();
+    const json = JSON.parse(body.slice(0, body.lastIndexOf('}') + 1)) as { kind?: unknown; items?: unknown; pages?: unknown; instructions?: unknown };
     const items = Array.isArray(json.items) ? json.items.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
     if (!items.length) return undefined;
-    return {
-      items: items.slice(0, 20),
-      pages: json.pages === 'all' ? 'all' : 'current',
-      instructions: typeof json.instructions === 'string' ? json.instructions : '',
-      pageIndex,
-      state: 'ready',
-    };
+    const instructions = typeof json.instructions === 'string' ? json.instructions : '';
+    const label = (match[1] ?? '').replace('takeoff-', '');
+    const said = typeof json.kind === 'string' ? json.kind.toLowerCase() : '';
+    let kind: ChatCountAction['kind'];
+    if (label === 'count' || label === 'linear' || label === 'area') kind = label;
+    else if (said === 'count' || said === 'linear' || said === 'area') kind = said;
+    else if (said === 'length') kind = 'linear';
+    else {
+      const words = `${question} ${items.join(' ')} ${instructions}`.toLowerCase();
+      kind = /\b(area|[aá]rea|room|cuarto|habitaci[oó]n|sala|floor|piso|ceiling|cielo|slab|losa|sf|m2|m²)\b/.test(words) ? 'area'
+        : /\b(wall|muro|pared|linear|lineal|length|largo|longitud|trace|traza|trazar|curb|bordillo|footing|zapata|pipe|tuber[ií]a|fence|baseboard)\b/.test(words) ? 'linear'
+        : 'count';
+    }
+    return { kind, items: items.slice(0, 20), pages: json.pages === 'all' ? 'all' : 'current', instructions, pageIndex, state: 'ready' };
   } catch {
     return undefined;
   }
+}
+
+// Length of a polyline (same units as its points)
+function polyLength(points: Pt[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  return total;
+}
+
+// The pieces of a polyline inside a rectangle (each segment cut with Liang–Barsky)
+function clipPolyline(points: Pt[], r: Rect): Pt[][] {
+  const pieces: Pt[][] = [];
+  let current: Pt[] = [];
+  const near = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y) < 1e-6;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    let t0 = 0, t1 = 1, inside = true;
+    for (const [p, q] of [[-dx, a.x - r.x], [dx, r.x + r.w - a.x], [-dy, a.y - r.y], [dy, r.y + r.h - a.y]]) {
+      if (p === 0) {
+        if (q < 0) { inside = false; break; }
+      } else {
+        const t = q / p;
+        if (p < 0) { if (t > t1) { inside = false; break; } if (t > t0) t0 = t; }
+        else { if (t < t0) { inside = false; break; } if (t < t1) t1 = t; }
+      }
+    }
+    if (!inside) {
+      if (current.length > 1) pieces.push(current);
+      current = [];
+      continue;
+    }
+    const start = { x: a.x + dx * t0, y: a.y + dy * t0 }, end = { x: a.x + dx * t1, y: a.y + dy * t1 };
+    if (current.length && near(current[current.length - 1], start)) {
+      current.push(end);
+    } else {
+      if (current.length > 1) pieces.push(current);
+      current = [start, end];
+    }
+    if (t1 < 1) {                       // the line leaves the rectangle here
+      pieces.push(current);
+      current = [];
+    }
+  }
+  if (current.length > 1) pieces.push(current);
+  return pieces;
+}
+
+// The part of a polygon inside a rectangle (Sutherland–Hodgman)
+function clipPolygon(points: Pt[], r: Rect): Pt[] {
+  const edges: [(p: Pt) => boolean, (a: Pt, b: Pt) => Pt][] = [
+    [p => p.x >= r.x, (a, b) => ({ x: r.x, y: a.y + (b.y - a.y) * (r.x - a.x) / (b.x - a.x) })],
+    [p => p.x <= r.x + r.w, (a, b) => ({ x: r.x + r.w, y: a.y + (b.y - a.y) * (r.x + r.w - a.x) / (b.x - a.x) })],
+    [p => p.y >= r.y, (a, b) => ({ x: a.x + (b.x - a.x) * (r.y - a.y) / (b.y - a.y), y: r.y })],
+    [p => p.y <= r.y + r.h, (a, b) => ({ x: a.x + (b.x - a.x) * (r.y + r.h - a.y) / (b.y - a.y), y: r.y + r.h })],
+  ];
+  let out = points;
+  for (const [inside, cross] of edges) {
+    const input = out;
+    out = [];
+    input.forEach((b, i) => {
+      const a = input[(i + input.length - 1) % input.length];
+      if (inside(b)) {
+        if (!inside(a)) out.push(cross(a, b));
+        out.push(b);
+      } else if (inside(a)) {
+        out.push(cross(a, b));
+      }
+    });
+    if (!out.length) break;
+  }
+  return out;
 }
 
 function round2(x: number): number {
@@ -914,6 +1277,18 @@ function parseAnswer(text: string): AiAnswer {
   if (start < 0 || end < start) throw new Error('The AI did not return a list of counts. Try again or add instructions.');
   const json = JSON.parse(text.slice(start, end + 1)) as Partial<AiAnswer>;
   return { items: Array.isArray(json.items) ? json.items : [], notes: typeof json.notes === 'string' ? json.notes : '' };
+}
+
+// The JSON of a line or area tracing answer (also takes "lines" or "polygons" for "shapes")
+function parseShapeAnswer(text: string): AiShapeAnswer {
+  const start = text.indexOf('{'), end = text.lastIndexOf('}');
+  if (start < 0 || end < start) throw new Error('The AI did not return any shapes. Try again or add instructions.');
+  const json = JSON.parse(text.slice(start, end + 1)) as { items?: Record<string, unknown>[]; notes?: unknown };
+  const items = (Array.isArray(json.items) ? json.items : []).map(e => ({
+    item_id: String(e['item_id'] ?? ''),
+    shapes: (e['shapes'] ?? e['lines'] ?? e['polygons'] ?? []) as AiShape[],
+  }));
+  return { items, notes: typeof json.notes === 'string' ? json.notes : '' };
 }
 
 function errorText(e: unknown): string {

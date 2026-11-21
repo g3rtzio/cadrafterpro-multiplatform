@@ -63,6 +63,27 @@ function createWindow() {
   win.once('ready-to-show', () => { win.maximize(); win.show(); });
   win.on('closed', () => { win = null; });
 
+  // The window's X (or Alt+F4 / Cmd+Q): the page asks to save documents with changes first.
+  // window.cadrafterRequestClose() answers true when nothing needs saving; otherwise it shows
+  // Save / Don't Save / Cancel and calls window.close() itself when every document is answered,
+  // which comes back here and is asked again (by then nothing is left to save).
+  let allowClose = false;
+  win.on('close', (event) => {
+    if (allowClose) return;
+    event.preventDefault();
+    const askPage = 'typeof window.cadrafterRequestClose === "function" ? window.cadrafterRequestClose() : true';
+    // A page that doesn't answer in 5 s (still loading, frozen) doesn't keep the window open
+    const timeout = new Promise(resolve => setTimeout(() => resolve(true), 5000));
+    Promise.race([win.webContents.executeJavaScript(askPage, true), timeout])
+      .then(canClose => { if (canClose) closeNow(); })
+      .catch(() => closeNow());                        // page not loaded or not answering: just close
+  });
+  const closeNow = () => {
+    if (!win || win.isDestroyed()) return;
+    allowClose = true;
+    win.close();
+  };
+
   // Links to other sites (API key pages, help) open in the normal browser
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url) && !url.startsWith(START_URL)) {

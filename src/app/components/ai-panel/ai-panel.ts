@@ -1,10 +1,10 @@
 import { ChangeDetectionStrategy, Component, ElementRef, effect, inject, signal, untracked, viewChild } from '@angular/core';
-import { AI_PROVIDERS, AiAssistant, AiProvider } from '../../services/ai-assistant/ai-assistant';
+import { AI_PROVIDERS, AiAssistant, AiProvider, LOCAL_SERVERS } from '../../services/ai-assistant/ai-assistant';
 import { DrawingStore } from '../../services/drawing.store/drawing.store';
 import { Icon } from '../icon/icon';
 
-// AI panel of the right side bar. Without an API key it is the form to connect Claude, ChatGPT or
-// Gemini; once connected it is a chat about the open drawing (the current page goes along as a
+// AI panel of the right side bar. Without an API key it is the form to connect Claude, ChatGPT,
+// Gemini or a local model server; once connected it is a chat about the open drawing (the current page goes along as a
 // picture plus its text). The chat can propose a count of takeoff items, which runs with one
 // click and adds the counts straight into the document (Undo removes them).
 @Component({
@@ -46,11 +46,11 @@ import { Icon } from '../icon/icon';
             }
             @if (m.action; as a) {
               <div class="action">
-                <div class="secondary small">Count on {{ a.pages === 'all' ? 'all pages' : s.pageName(a.pageIndex) }}:</div>
+                <div class="secondary small">{{ a.kind === 'count' ? 'Count' : a.kind === 'area' ? 'Trace areas' : 'Trace lines' }} on {{ a.pages === 'all' ? 'all pages' : s.pageName(a.pageIndex) }}:</div>
                 <div class="action-items">{{ a.items.join(', ') }}</div>
                 @if (a.state === 'ready') {
                   <button class="primary" [disabled]="ai.busy() || !s.hasDocument" (click)="ai.runAction(m.id)">
-                    <app-icon class="icon small" name="auto_awesome" /> Count and Add to Drawing
+                    <app-icon class="icon small" name="auto_awesome" /> {{ a.kind === 'linear' ? 'Trace Lines on Drawing' : a.kind === 'area' ? 'Trace Areas on Drawing' : 'Count and Add to Drawing' }}
                   </button>
                 } @else if (a.state === 'running') {
                   <div class="busy"><span class="spinner"></span> {{ ai.progress() }}</div>
@@ -65,7 +65,7 @@ import { Icon } from '../icon/icon';
           <div class="chat-empty">
             <app-icon class="icon" name="auto_awesome" />
             <div>Ask {{ info.name }} about this drawing.</div>
-            <div class="secondary small">The current page goes along as a picture with its text. The AI can also count symbols and add them to the takeoff.</div>
+            <div class="secondary small">The current page goes along as a picture with its text. The AI can also count symbols, trace walls and room areas, and add them to the takeoff.</div>
             <div class="suggestions">
               @for (q of suggestions; track q) {
                 <button [disabled]="!s.hasDocument" (click)="ask(q)">{{ q }}</button>
@@ -102,19 +102,38 @@ import { Icon } from '../icon/icon';
           <button [class.active]="ai.provider() === p.id" (click)="setProvider(p.id)">{{ p.name }}</button>
         }
       </div>
-      <label class="field">API key
-        <div class="key-row">
-          <input [type]="showKey() ? 'text' : 'password'" autocomplete="off" spellcheck="false"
+      @if (info.id === 'local') {
+        <!-- Local models: the address of the model server on this computer (no key, nothing billed) -->
+        <label class="field">Server URL
+          <input type="text" autocomplete="off" spellcheck="false"
                  [placeholder]="info.keyHint" [value]="ai.apiKey()" (change)="ai.setApiKey(value($event))" />
-          <button class="icon-button" [title]="showKey() ? 'Hide key' : 'Show key'" (click)="showKey.set(!showKey())">
-            <app-icon class="icon small" [name]="showKey() ? 'visibility_off' : 'visibility'" />
-          </button>
+        </label>
+        <div class="row-buttons">
+          @for (srv of localServers; track srv.url) {
+            <button [class.active]="ai.apiKey() === srv.url" (click)="ai.setApiKey(srv.url)">{{ srv.name }}</button>
+          }
         </div>
-      </label>
-      <div class="secondary small">
-        Get a key at <a [href]="info.keyUrl" target="_blank" rel="noopener">{{ keyHost(info.keyUrl) }}</a>.
-        A Claude Pro or ChatGPT Plus subscription doesn't include API access; the key is billed per use.
-      </div>
+        <div class="secondary small">
+          Runs Qwen, Gemma and other models on this computer with
+          <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a> (for example
+          <code>ollama pull qwen3</code>) or LM Studio (start its server and turn on CORS).
+          To read the page pictures, use a model with vision (Gemma, Qwen-VL).
+        </div>
+      } @else {
+        <label class="field">API key
+          <div class="key-row">
+            <input [type]="showKey() ? 'text' : 'password'" autocomplete="off" spellcheck="false"
+                   [placeholder]="info.keyHint" [value]="ai.apiKey()" (change)="ai.setApiKey(value($event))" />
+            <button class="icon-button" [title]="showKey() ? 'Hide key' : 'Show key'" (click)="showKey.set(!showKey())">
+              <app-icon class="icon small" [name]="showKey() ? 'visibility_off' : 'visibility'" />
+            </button>
+          </div>
+        </label>
+        <div class="secondary small">
+          Get a key at <a [href]="info.keyUrl" target="_blank" rel="noopener">{{ keyHost(info.keyUrl) }}</a>.
+          A Claude Pro or ChatGPT Plus subscription doesn't include API access; the key is billed per use.
+        </div>
+      }
       <label class="field">Model
         <input [attr.list]="'ai-models-' + info.id" [value]="ai.model()" (change)="ai.setModel(value($event))" />
         <datalist [id]="'ai-models-' + info.id">
@@ -122,7 +141,7 @@ import { Icon } from '../icon/icon';
         </datalist>
       </label>
       <label class="check"><input type="checkbox" [checked]="ai.remember()" (change)="ai.setRemember(checked($event))" />
-        Remember the key on this computer</label>
+        Remember {{ info.id === 'local' ? 'the server' : 'the key' }} on this computer</label>
       <div class="row-buttons">
         <button class="primary" [disabled]="ai.busy() || !ai.apiKey()" (click)="connect()">Connect</button>
         <button [disabled]="!ai.apiKey()" (click)="disconnect()">Disconnect</button>
@@ -134,7 +153,11 @@ import { Icon } from '../icon/icon';
           <app-icon class="icon small" [name]="st.ok ? 'check_circle' : 'error'" /> {{ st.text }}
         </div>
       }
-      <div class="secondary small">The key stays in this browser and is sent only to {{ info.name }}. The AI sees the pictures and text of the pages you send.</div>
+      @if (info.id === 'local') {
+        <div class="secondary small">Everything stays on this computer: the pages are sent only to the local server.</div>
+      } @else {
+        <div class="secondary small">The key stays in this browser and is sent only to {{ info.name }}. The AI sees the pictures and text of the pages you send.</div>
+      }
     </section>
     }
 
@@ -203,6 +226,7 @@ export class AiPanel {
   readonly store = inject(DrawingStore);
   readonly ai = inject(AiAssistant);
   readonly providers = AI_PROVIDERS;
+  readonly localServers = LOCAL_SERVERS;
 
   readonly showKey = signal(false);
   // What the panel shows; without a key it is always the connection form
@@ -214,6 +238,7 @@ export class AiPanel {
     'What is the scale of this sheet?',
     'List the rooms with their sizes',
     'Count the electrical outlets on this page',
+    'Trace the walls on this page',
   ];
   private readonly chatList = viewChild<ElementRef<HTMLElement>>('chatList');
   private readonly input = viewChild<ElementRef<HTMLTextAreaElement>>('input');

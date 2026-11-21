@@ -256,6 +256,7 @@ export class OcrService {
         if (job.isRegion) this.lastRegion.set(result);
         if (!job.isRegion && this.makeSearchable() && lib && lib === this.store.lib && result.words.length) {
           await this.embed(lib, pageIndex, result);
+          this.store.markModified();                     // the text layer is saved with the PDF
         }
       }
       if (this.cancelled) this.store.showToast('OCR cancelled');
