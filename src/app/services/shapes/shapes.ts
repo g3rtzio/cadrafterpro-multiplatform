@@ -16,6 +16,7 @@ export interface Shape {
   y?: number;
   fill: string;
   fillOpacity?: number;
+  fillRule?: 'evenodd';            // holes (Cut Out) stay empty
   stroke: string;
   width: number;
   dash?: string;
@@ -52,6 +53,9 @@ function circlePath(c: Pt, r: number): string {
   return `M${c.x - r} ${c.y} a${r} ${r} 0 1 0 ${r * 2} 0 a${r} ${r} 0 1 0 ${-r * 2} 0 Z`;
 }
 
+// Size of the vertex squares of the selected line or area (screen pixels)
+export const VERTEX_HANDLE = 8;
+
 // Everything drawn on one page: PDF markups, app measurements and the selection.
 // zoom: screen pixels per view unit (line widths and texts grow with it, like things printed on the plan;
 // boxes and labels that must keep their size on screen are divided by it).
@@ -74,6 +78,14 @@ export function pageShapes(store: DrawingStore, pageIndex: number, g: PageGeomet
       const b = el.bounds;
       const r = g.rectToView({ x: b.x - 4, y: b.y - 4, w: b.w + 8, h: b.h + 8 });
       shapes.push({ d: rectPath(r), fill: 'none', stroke: COLORS.blue, width: 2 * px, dash: `${4 * px} ${3 * px}`, opacity: 1 });
+    }
+    // One line or area selected: a square on every vertex, to drag it
+    const only = store.selection.length === 1 ? store.selection[0] : null;
+    const vertices = only && only.pageIndex === pageIndex ? store.editableVertices(only) : null;
+    for (const p of vertices ?? []) {
+      const v = toView(p);
+      const h = VERTEX_HANDLE * px;
+      shapes.push({ d: rectPath({ x: v.x - h / 2, y: v.y - h / 2, w: h, h }), fill: '#FFFFFF', stroke: COLORS.blue, width: 1.5 * px, opacity: 1 });
     }
   }
   return shapes;
@@ -112,8 +124,9 @@ function measurementShapes(m: Measurement, toView: (p: Pt) => Pt, zoom: number, 
     default: {
       if (points.length < 2) break;
       const dash = dashPattern(m.lineStyle, width);
+      const holes = m.kind === 'area' ? m.cutouts.filter(h => h.length > 2).map(h => ' ' + pathOf(h.map(toView), true)).join('') : '';
       shapes.push({
-        d: pathOf(points, m.kind === 'area'),
+        d: pathOf(points, m.kind === 'area') + holes, fillRule: holes ? 'evenodd' : undefined,
         fill: m.kind === 'area' ? m.areaFillColor : 'none', fillOpacity: m.fillOpacity,
         stroke: m.lineColor, width, dash: dash.length ? dash.join(' ') : undefined, opacity: m.opacity,
       });
@@ -157,8 +170,9 @@ export function markupShapes(m: Markup, g: PageGeometry, shapes: Shape[]): void 
       if (!m.vertices) break;
       const closed = m.subtype === 'Polygon';
       const cloud = closed && m.cloud > 0 ? cloudCurves(m.vertices, m.cloudSize) : null;
-      const d = cloud ? curvesPath(cloud.start, cloud.curves, toView, true) : pathOf(m.vertices.map(toView), closed);
-      shapes.push({ d, fill: closed ? fill : 'none', fillOpacity, stroke, width: width > 0 ? width : 0, dash, opacity: m.opacity });
+      const holes = closed ? m.cutouts.filter(h => h.length > 2).map(h => ' ' + pathOf(h.map(toView), true)).join('') : '';
+      const d = (cloud ? curvesPath(cloud.start, cloud.curves, toView, true) : pathOf(m.vertices.map(toView), closed)) + holes;
+      shapes.push({ d, fillRule: holes ? 'evenodd' : undefined, fill: closed ? fill : 'none', fillOpacity, stroke, width: width > 0 ? width : 0, dash, opacity: m.opacity });
       if (!closed) endingShapes(m, m.vertices, toView, shapes);
       break;
     }

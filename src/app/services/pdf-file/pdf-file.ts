@@ -1,6 +1,6 @@
 import {
   PDFArray, PDFDict, PDFDocument, PDFFont, PDFHexString, PDFName, PDFNumber, PDFObject, PDFPage, PDFRawStream,
-  PDFRef, PDFStream, PDFString, StandardFonts, decodePDFRawStream,
+  PDFObjectCopier, PDFRef, PDFStream, PDFString, StandardFonts, decodePDFRawStream,
 } from 'pdf-lib';
 import {
   Cubic, LINE_HEIGHT, Markup, Measurement, TEXT_PADDING, cloudCurves, readableAngleAtHalfLength, ellipseCurves, lineEnding, randomName, wrapText,
@@ -128,6 +128,7 @@ function readMarkup(dict: PDFDict, pageIndex: number): Markup | null {
   m.lineWidth = (bs && numberOf(bs, 'W')) ?? (border && border.length >= 3 ? border[2] : 1);
   m.dashed = !!bs && nameOf(bs, 'S') === 'D';
   m.vertices = pairs(numbersOf(dict, 'Vertices'));
+  m.cutouts = readCutouts(dict);
   m.line = pairs(numbersOf(dict, 'L'));
   const ink = dict.lookupMaybe(PDFName.of('InkList'), PDFArray);
   if (ink) {
@@ -327,10 +328,18 @@ export async function writePdf(lib: PDFDocument, input: SaveInput): Promise<Uint
     }
     if (!m.ref) {
       // New copy: clone the original object
-      const source = m.template?.ref ? lib.context.lookupMaybe(m.template.ref, PDFDict) : undefined;
+      const from = m.templateLib ?? lib;
+      const source = m.template?.ref ? from.context.lookupMaybe(m.template.ref, PDFDict) : undefined;
       if (!source) continue;
-      const dict = source.clone(lib.context);
+      let dict = source.clone(from.context);
       ['IRT', 'RT', 'GroupNesting', 'Popup'].forEach(k => dict.delete(PDFName.of(k)));
+      // Pasted from another document: its objects (appearance, measure, fonts) are copied into this file
+      // (without /P, its page, which would bring that whole document along)
+      if (from !== lib) {
+        dict.delete(PDFName.of('P'));
+        dict = PDFObjectCopier.for(from.context, lib.context).copy(dict);
+        dict.set(PDFName.of('P'), page.ref);
+      }
       dict.set(PDFName.of('NM'), PDFHexString.fromText(randomName()));
       m.ref = lib.context.register(dict);
       page.node.addAnnot(m.ref);
@@ -338,6 +347,11 @@ export async function writePdf(lib: PDFDocument, input: SaveInput): Promise<Uint
     const dict = lib.context.lookupMaybe(m.ref, PDFDict);
     if (!dict) continue;
     writeMarkup(lib, dict, m);
+    // Holes added or removed (Cut Out): the picture other viewers show is drawn again
+    if (m.redrawAppearance) {
+      dict.set(PDFName.of('AP'), lib.context.obj({ N: markupAppearance(lib, font, m) }));
+      m.redrawAppearance = false;
+    }
     // A markup brought back by Undo after a save is no longer on the page: put it back
     const annots = page.node.Annots();
     if ((annots?.indexOf(m.ref) ?? -1) < 0) page.node.addAnnot(m.ref);
@@ -399,6 +413,9 @@ function writeMarkup(lib: PDFDocument, dict: PDFDict, m: Markup): void {
   const r = m.rect;
   dict.set(PDFName.of('Rect'), lib.context.obj([r.x, r.y, r.x + r.w, r.y + r.h]));
   if (m.vertices) dict.set(PDFName.of('Vertices'), lib.context.obj(flat(m.vertices)));
+  if (m.cutouts.length) dict.set(PDFName.of(CUTOUTS_KEY), lib.context.obj(m.cutouts.map(flat)));
+  else dict.delete(PDFName.of(CUTOUTS_KEY));
+  dict.delete(PDFName.of(OLD_CUTOUTS_KEY));
   if (m.line) dict.set(PDFName.of('L'), lib.context.obj(flat(m.line)));
   if (m.inkList) dict.set(PDFName.of('InkList'), lib.context.obj(m.inkList.map(flat)));
   if (m.subject) dict.set(PDFName.of('Subj'), PDFHexString.fromText(m.subject));
@@ -553,6 +570,7 @@ function measurementDict(lib: PDFDocument, font: PDFFont, s: SaveMeasurement, au
         Measure: measureDict(lib, s.feetPerPoint, s.scaleText),
         Vertices: flat(m.points),
       });
+      if (m.cutouts.length) dict[CUTOUTS_KEY] = m.cutouts.map(flat);
       break;
   }
   return lib.context.obj(dict as Record<string, PDFObject>);
@@ -571,13 +589,14 @@ function appearance(lib: PDFDocument, font: PDFFont, m: Measurement): { ref: PDF
     for (const p of m.points) ops.push(circlePath(p, Measurement.countRadius) + ' f');
     ops.push('Q');
   } else if (m.points.length > 1) {
+    const holes = m.kind === 'area' ? m.cutouts.filter(h => h.length > 2).map(h => ' ' + path(h, true)).join('') : '';
     if (m.kind === 'area') {
       const [fr, fg, fb] = rgb(m.areaFillColor).map(num);
-      ops.push('q /GS1 gs', `${fr} ${fg} ${fb} rg`, path(m.points, true) + ' f', 'Q');
+      ops.push('q /GS1 gs', `${fr} ${fg} ${fb} rg`, path(m.points, true) + holes + (holes ? ' f*' : ' f'), 'Q');
     }
     const dash = dashPattern(m.lineStyle, m.lineWidth).map(num).join(' ');
     ops.push('q /GS0 gs', `${r} ${g} ${b} RG`, `${num(m.lineWidth)} w 1 J 1 j [${dash}] 0 d`,
-      path(m.points, m.kind === 'area') + ' S');
+      path(m.points, m.kind === 'area') + holes + ' S');
     // Arrowheads (Dimension)
     ops.push(`${r} ${g} ${b} rg`);
     for (const head of m.arrowHeads(m.points, Math.max(m.lineWidth * 6, 6))) ops.push(path(head, true) + ' f');
@@ -721,6 +740,22 @@ function markupToolDict(lib: PDFDocument, font: PDFFont, m: Markup, author: stri
 }
 
 // Appearance stream of a Markup tool markup, so every PDF viewer draws it the same way
+// Holes of an area (Cut Out), the way Bluebeam Revu writes them: /Cutouts [[x y x y …] …]
+// ("CPCutouts" was written by an earlier CadrafterPro version and is still read)
+const CUTOUTS_KEY = 'Cutouts';
+const OLD_CUTOUTS_KEY = 'CPCutouts';
+
+function readCutouts(dict: PDFDict): Pt[][] {
+  const list = dict.lookupMaybe(PDFName.of(CUTOUTS_KEY), PDFArray) ?? dict.lookupMaybe(PDFName.of(OLD_CUTOUTS_KEY), PDFArray);
+  const holes: Pt[][] = [];
+  for (let i = 0; i < (list?.size() ?? 0); i++) {
+    const hole = list!.lookupMaybe(i, PDFArray);
+    const pts = hole ? pairs(arrayNumbers(hole)) : null;
+    if (pts && pts.length >= 3) holes.push(pts);
+  }
+  return holes;
+}
+
 function markupAppearance(lib: PDFDocument, font: PDFFont, m: Markup): PDFRef {
   const ops: string[] = [];
   const [r, g, b] = rgb(m.color ?? '#FF0000').map(num);
@@ -732,10 +767,10 @@ function markupAppearance(lib: PDFDocument, font: PDFFont, m: Markup): PDFRef {
     pts.map((p, i) => `${num(p.x)} ${num(p.y)} ${i === 0 ? 'm' : 'l'}`).join(' ') + (close ? ' h' : '');
   const curves = (start: Pt, list: Cubic[]) =>
     `${num(start.x)} ${num(start.y)} m ` + list.map(c => c.map(p => `${num(p.x)} ${num(p.y)}`).join(' ') + ' c').join(' ') + ' h';
-  const paint = (shape: string, canFill: boolean) => {
+  const paint = (shape: string, canFill: boolean, evenOdd = false) => {
     if (canFill && fill) {
       const [fr, fg, fb] = rgb(m.fillColor!).map(num);
-      ops.push('q /GS1 gs', `${fr} ${fg} ${fb} rg`, shape + ' f', 'Q');
+      ops.push('q /GS1 gs', `${fr} ${fg} ${fb} rg`, shape + (evenOdd ? ' f*' : ' f'), 'Q');
     }
     if (stroke) ops.push('q /GS0 gs', `${r} ${g} ${b} RG ${num(w)} w 1 J 1 j ${dash}`, shape + ' S', 'Q');
   };
@@ -760,7 +795,17 @@ function markupAppearance(lib: PDFDocument, font: PDFFont, m: Markup): PDFRef {
     case 'Polygon': {
       if (!m.vertices) break;
       const cloud = m.cloud > 0 ? cloudCurves(m.vertices, m.cloudSize) : null;
-      paint(cloud ? curves(cloud.start, cloud.curves) : path(m.vertices, true), true);
+      const holes = m.cutouts.filter(h => h.length > 2).map(h => ' ' + path(h, true)).join('');
+      paint((cloud ? curves(cloud.start, cloud.curves) : path(m.vertices, true)) + holes, true, !!holes);
+      // A Revu area drawn again (Cut Out): its value in the middle, as Revu shows it
+      const encoded = m.isRevuMeasurement && m.contents ? encode(font, m.contents) : null;
+      if (encoded) {
+        const size = 10;
+        const c = m.vertices.reduce((s, p) => ({ x: s.x + p.x / m.vertices!.length, y: s.y + p.y / m.vertices!.length }), { x: 0, y: 0 });
+        const width = safeWidth(font, m.contents, size);
+        ops.push('q /GS0 gs BT', `/Helv ${size} Tf ${r} ${g} ${b} rg`,
+          `1 0 0 1 ${num(c.x - width / 2)} ${num(c.y - size * 0.35)} Tm ${encoded} Tj`, 'ET Q');
+      }
       break;
     }
     case 'PolyLine':
@@ -770,6 +815,16 @@ function markupAppearance(lib: PDFDocument, font: PDFFont, m: Markup): PDFRef {
       paint(path(pts, false), false);
       ending(m.lineEnds?.[0], pts[1], pts[0]);
       ending(m.lineEnds?.[1], pts[pts.length - 2], pts[pts.length - 1]);
+      // A Revu length drawn again (vertex moved): its value above the middle of the line
+      const encoded = m.isRevuMeasurement && m.contents ? encode(font, m.contents) : null;
+      if (encoded) {
+        const size = 10;
+        const mid = Math.floor((pts.length - 1) / 2);
+        const p0 = pts[mid], p1 = pts[mid + 1];
+        const width = safeWidth(font, m.contents, size);
+        ops.push('q /GS0 gs BT', `/Helv ${size} Tf ${r} ${g} ${b} rg`,
+          `1 0 0 1 ${num((p0.x + p1.x) / 2 - width / 2)} ${num((p0.y + p1.y) / 2 + 3)} Tm ${encoded} Tj`, 'ET Q');
+      }
       break;
     }
     case 'Ink':

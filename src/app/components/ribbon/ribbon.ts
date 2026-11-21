@@ -6,9 +6,12 @@ import { TextSelect } from '../../services/text-select/text-select';
 import { SlipSheet } from '../../services/slip-sheet/slip-sheet';
 import { OcrService } from '../../services/ocr/ocr';
 import { PageLabeler } from '../../services/page-labels/page-labels';
+import { CutoutTool } from '../../services/cutout-tool/cutout-tool';
+import { JoistTool } from '../../services/joist-tool/joist-tool';
 import { CalcTools } from '../../services/calc-tools/calc-tools';
 import { CostDatabase, TemplateLibrary } from '../../services/template-library/template-library';
 import { presetFilters } from '../../models/estimate-filter';
+import { byFileName, pickPdfFiles } from '../../services/file-picker/file-picker';
 import { Icon } from '../icon/icon';
 
 // Ribbon-style top bar with tabs (Home, Estimating, Templates) — port of RibbonView.swift
@@ -24,6 +27,16 @@ import { Icon } from '../icon/icon';
     .markup-button { display: grid; place-items: center; border: none; background: transparent; padding: 0; border-radius: 5px; }
     .markup-button .icon { font-size: 19px; }
     .markup-button.active { background: var(--accent-soft); }
+    /* Small buttons stacked in a column (2 or 3), so the Home tab fits with its labels */
+    .ribbon-stack { display: flex; flex-direction: column; justify-content: center; gap: 1px; }
+    .ribbon-small {
+      display: flex; align-items: center; gap: 5px; height: 19px; padding: 0 6px 0 4px;
+      border: none; background: transparent; font-size: 11px; white-space: nowrap; text-align: left; border-radius: 4px;
+    }
+    .ribbon-small .icon { font-size: 16px; }
+    .ribbon-small.active { background: var(--accent-soft); }
+    :host(.ribbon-icons) .ribbon-small span { display: none; }
+    :host(.ribbon-icons) .ribbon-small { padding: 0 3px; }
   `],
   template: `
     @let s = store.watch();
@@ -41,15 +54,17 @@ import { Icon } from '../icon/icon';
           <button class="ribbon-button" title="Open File (⌘O)" (click)="openFile.emit()">
             <app-icon class="icon accent" name="folder_open" /><span>Open File</span>
           </button>
-          <button class="ribbon-button" title="Save (⌘S)" [disabled]="!s.hasDocument" (click)="s.save()">
-            <app-icon class="icon accent" name="save" /><span>Save</span>
+          <div class="ribbon-stack">
+            <button class="ribbon-small" title="Save (⌘S)" [disabled]="!s.hasDocument" (click)="s.save()">
+            <app-icon class="icon small accent" name="save" /><span>Save</span>
           </button>
-          <button class="ribbon-button" title="Save As (⇧⌘S)" [disabled]="!s.hasDocument" (click)="s.saveAs()">
-            <app-icon class="icon accent" name="save_as" /><span>Save As</span>
+          <button class="ribbon-small" title="Save As (⇧⌘S)" [disabled]="!s.hasDocument" (click)="s.saveAs()">
+            <app-icon class="icon small accent" name="save_as" /><span>Save As</span>
           </button>
-          <button class="ribbon-button" title="Close File" [disabled]="!s.hasDocument" (click)="s.closeDocument()">
-            <app-icon class="icon accent" name="close" /><span>Close</span>
+          <button class="ribbon-small" title="Close File" [disabled]="!s.hasDocument" (click)="s.closeDocument()">
+            <app-icon class="icon small accent" name="close" /><span>Close</span>
           </button>
+          </div>
         </div>
         <div class="ribbon-group-title">File</div>
       </div>
@@ -84,16 +99,18 @@ import { Icon } from '../icon/icon';
                     (click)="s.startDimension()">
               <app-icon class="icon" [style.color]="colors.blue" name="straighten" /><span>Dimension</span>
             </button>
+            <div class="ribbon-stack">
             <!-- Snap: measuring clicks jump to the vertices of the drawing -->
-            <button class="ribbon-button" title="Snap" [class.active]="s.snapEnabled"
+            <button class="ribbon-small" title="Snap" [class.active]="s.snapEnabled"
                     (click)="s.snapEnabled = !s.snapEnabled">
-              <app-icon class="icon" [style.color]="colors.green" name="my_location" /><span>Snap</span>
+              <app-icon class="icon small" [style.color]="colors.green" name="my_location" /><span>Snap</span>
             </button>
             <!-- Ortho: straight horizontal / vertical lines (also while Shift is held) -->
-            <button class="ribbon-button" title="Ortho: straight horizontal and vertical lines (hold Shift)" [class.active]="s.orthoEnabled"
+            <button class="ribbon-small" title="Ortho: straight horizontal and vertical lines (hold Shift)" [class.active]="s.orthoEnabled"
                     (click)="s.orthoEnabled = !s.orthoEnabled">
-              <app-icon class="icon" [style.color]="colors.orange" name="square_foot" /><span>Ortho</span>
+              <app-icon class="icon small" [style.color]="colors.orange" name="square_foot" /><span>Ortho</span>
             </button>
+            </div>
           </div>
           <div class="ribbon-group-title">Measure</div>
         </div>
@@ -125,6 +142,34 @@ import { Icon } from '../icon/icon';
                 }
               </div>
             }
+            <!-- Cut Out: a hole in an area (click = draw it; arrow = remove the holes of the selection) -->
+            <div class="menu-anchor ribbon-split" [class.active]="cutout.active()">
+              <button class="ribbon-button" [disabled]="!s.hasDocument" (click)="cutout.toggle()"
+                      title="Cut Out: click the corners of a hole inside an area; double click or Enter closes it. The hole is taken off the area.">
+                <app-icon class="icon" [style.color]="colors.green" name="content_cut" /><span>Cut Out</span>
+              </button>
+              <button class="ribbon-arrow" [disabled]="!s.hasDocument" (click)="toggleMenu('cutout', $event)">
+                <app-icon class="icon small" name="expand_more" />
+              </button>
+              @if (openMenu() === 'cutout') {
+                <div class="menu" (click)="$event.stopPropagation()">
+                  <button class="menu-item" (click)="openMenu.set(null); cutout.active() || cutout.toggle()">Draw a Cut Out</button>
+                  <button class="menu-item" [disabled]="!s.selectionHasCutouts" (click)="openMenu.set(null); s.removeCutouts()">Remove Cut Outs from the Selected Areas</button>
+                </div>
+              }
+            </div>
+            <div class="ribbon-stack">
+            <!-- Joist Tool: an area filled with joists at the O.C. spacing (area + joist length) -->
+            <button class="ribbon-small" [class.active]="joist.open() && joist.kind() === 'joist'" [disabled]="!s.hasDocument" (click)="joist.toggle('joist')"
+                    title="Joist Tool: draw an area (or select one), then click the start and the end of the joist direction. Joists are drawn inside at the O.C. spacing.">
+              <app-icon class="icon small" [style.color]="colors.orange" name="view_column" /><span>Joist</span>
+            </button>
+            <!-- Grid Tool: the Joist Tool with lines both ways (horizontal and vertical, each with its spacing) -->
+            <button class="ribbon-small" [class.active]="joist.open() && joist.kind() === 'grid'" [disabled]="!s.hasDocument" (click)="joist.toggle('grid')"
+                    title="Grid Tool: draw an area (or select one). It is filled with horizontal and vertical lines at their O.C. spacing.">
+              <app-icon class="icon small" [style.color]="colors.blue" name="grid_on" /><span>Grid</span>
+            </button>
+            </div>
           </div>
           <div class="ribbon-group-title">Takeoff</div>
         </div>
@@ -179,21 +224,23 @@ import { Icon } from '../icon/icon';
         <!-- Snapshot (copy a region, paste it on any page) and Overlay (compare two pages) -->
         <div class="ribbon-group">
           <div class="ribbon-buttons">
-            <button class="ribbon-button" title="Snapshot: drag a box to copy that region"
+            <div class="ribbon-stack">
+            <button class="ribbon-small" title="Snapshot: drag a box to copy that region"
                     [disabled]="!s.hasDocument" [class.active]="s.snapshotMode === 'capture'"
                     (click)="s.snapshotMode === 'capture' ? s.cancelSnapshot() : s.startSnapshot()">
-              <app-icon class="icon" [style.color]="colors.purple" name="screenshot_region" /><span>Snapshot</span>
+              <app-icon class="icon small" [style.color]="colors.purple" name="screenshot_region" /><span>Snapshot</span>
             </button>
-            <button class="ribbon-button" title="Paste the snapshot (Ctrl+V)"
+            <button class="ribbon-small" title="Paste the snapshot (Ctrl+V)"
                     [disabled]="!s.hasDocument || !s.snapshotClip" [class.active]="s.snapshotMode === 'place'"
                     (click)="s.snapshotMode === 'place' ? s.cancelSnapshot() : s.pasteSnapshot()">
-              <app-icon class="icon" [style.color]="colors.purple" name="content_paste" /><span>Paste</span>
+              <app-icon class="icon small" [style.color]="colors.purple" name="content_paste" /><span>Paste</span>
             </button>
-            <button class="ribbon-button" title="Overlay: show another page on top in a different color"
+            <button class="ribbon-small" title="Overlay: show another page on top in a different color"
                     [disabled]="!s.hasDocument || s.pageCount < 2" [class.active]="!!store.overlay()"
                     (click)="store.overlay() ? s.closeOverlay() : s.startOverlay()">
-              <app-icon class="icon" [style.color]="colors.orange" name="layers" /><span>Overlay</span>
+              <app-icon class="icon small" [style.color]="colors.orange" name="layers" /><span>Overlay</span>
             </button>
+            </div>
           </div>
           <div class="ribbon-group-title">Compare</div>
         </div>
@@ -230,7 +277,7 @@ import { Icon } from '../icon/icon';
                     (click)="s.insertBlankPage(s.currentPageIndex + 1)">
               <app-icon class="icon" [style.color]="colors.blue" name="note_add" /><span>Blank Page</span>
             </button>
-            <button class="ribbon-button" title="Add pages from another PDF after this one" [disabled]="!s.hasDocument"
+            <button class="ribbon-button" title="Add pages from one or more PDFs (you choose where they go)" [disabled]="!s.hasDocument"
                     (click)="pickPages()">
               <app-icon class="icon" [style.color]="colors.blue" name="post_add" /><span>From PDF</span>
             </button>
@@ -276,6 +323,10 @@ import { Icon } from '../icon/icon';
             <button class="ribbon-button" [disabled]="!s.hasDocument || slipSheet.busy()" (click)="slipSheet.pick()"
                     title="Slip Sheet: replace the pages with the same name with the pages of another PDF (an addendum), keeping markups and measurements">
               <app-icon class="icon" [style.color]="colors.blue" name="restore_page" /><span>Slip Sheet</span>
+            </button>
+            <button class="ribbon-button" [disabled]="!s.hasDocument" (click)="s.openExtract()"
+                    title="Extract Pages: save the selected pages (Ctrl/Shift + click in the tree or Pages panel) as a new PDF, with their markups">
+              <app-icon class="icon" [style.color]="colors.green" name="file_export" /><span>Extract</span>
             </button>
             <button class="ribbon-button" title="Delete this page and what was measured on it (can't be undone)"
                     [disabled]="!s.hasDocument || s.pageCount < 2" (click)="deletePage()">
@@ -594,17 +645,17 @@ export class Ribbon {
   readonly tabs: RibbonTab[] = ['Home', 'Page', 'Estimating', 'Templates', 'Cost Database'];
   readonly labeler = inject(PageLabeler);
   readonly calc = inject(CalcTools);
+  readonly cutout = inject(CutoutTool);
+  readonly joist = inject(JoistTool);
 
-  // Page tab: pages of another PDF go after the current page (the Insert Pages window asks which)
-  pickPages(): void {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/pdf,.pdf';
-    input.addEventListener('change', async () => {
-      const file = input.files?.[0];
-      if (file) await this.store.requestInsertPages(new Uint8Array(await file.arrayBuffer()), file.name, this.store.currentPageIndex + 1);
-    });
-    input.click();
+  // Page tab: pages of one or several PDFs (from the last folder used); the Insert Pages
+  // window asks which pages and where (after / before this page, at the beginning or the end)
+  async pickPages(): Promise<void> {
+    const picked = await pickPdfFiles(true);
+    if (picked.length === 0) return;
+    const files = await Promise.all(picked.map(p => p.file).sort(byFileName)
+      .map(async f => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+    await this.store.requestInsertPages(files, this.store.currentPageIndex + 1);
   }
 
   deletePage(): void {
@@ -615,10 +666,10 @@ export class Ribbon {
   }
   readonly scaleGroups = SCALE_GROUPS;
   readonly colors = COLORS;
+  // Takeoff buttons (Segment left out at Gerardo's request: Linear covers it; Dimension still uses that kind)
   readonly takeoffs: { kind: TakeoffKind; color: string }[] = [
     { kind: 'area', color: COLORS.green },
     { kind: 'length', color: COLORS.blue },
-    { kind: 'segment', color: COLORS.orange },
     { kind: 'count', color: COLORS.red },
   ];
 

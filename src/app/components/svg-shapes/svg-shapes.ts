@@ -17,7 +17,7 @@ import { Shape } from '../../services/shapes/shapes';
                   [attr.text-anchor]="s.anchor" [attr.dominant-baseline]="s.baseline"
                   [attr.transform]="s.rotate ? 'rotate(' + s.rotate + ' ' + s.x + ' ' + s.y + ')' : null">{{ s.text }}</svg:text>
       } @else {
-        <svg:path [attr.d]="s.d" [attr.fill]="s.fill" [attr.fill-opacity]="s.fillOpacity"
+        <svg:path [attr.d]="s.d" [attr.fill]="s.fill" [attr.fill-opacity]="s.fillOpacity" [attr.fill-rule]="s.fillRule"
                   [attr.stroke]="s.stroke" [attr.stroke-width]="s.width" [attr.stroke-dasharray]="s.dash"
                   [attr.opacity]="s.opacity" stroke-linecap="round" stroke-linejoin="round"
                   [style.mix-blend-mode]="s.blend" />

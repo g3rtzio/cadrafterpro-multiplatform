@@ -20,23 +20,41 @@ import { Resizable } from './components/resizable/resizable';
 import { SlipSheetDialog } from './components/slip-sheet-dialog/slip-sheet-dialog';
 import { SlipSheet } from './services/slip-sheet/slip-sheet';
 import { PageLabeler } from './services/page-labels/page-labels';
+import { pickPdfFiles } from './services/file-picker/file-picker';
 import { InsertPagesDialog } from './components/insert-pages-dialog/insert-pages-dialog';
 import { PageLabelsDialog } from './components/page-labels-dialog/page-labels-dialog';
 import { RotatePagesDialog } from './components/rotate-pages-dialog/rotate-pages-dialog';
+import { ExtractPagesDialog } from './components/extract-pages-dialog/extract-pages-dialog';
 import { PitchDialog } from './components/pitch-dialog/pitch-dialog';
+import { SaveChangesDialog } from './components/save-changes-dialog/save-changes-dialog';
 
 // Main window — port of ContentView.swift:
 // left the element tree or the page thumbnails, ribbon on top, the plan (one or two panes)
 // in the middle, the status bar at the bottom and the properties panel on the right
+const SPLIT_KEY = 'cadrafterpro.splitRatio';
+
+function readSplit(): number {
+  try {
+    const v = Number(localStorage.getItem(SPLIT_KEY));
+    return v >= 0.15 && v <= 0.85 ? v : 0.5;
+  } catch {
+    return 0.5;
+  }
+}
+
+// Running inside the Electron window (it asks before closing through cadrafterRequestClose)
+const IS_DESKTOP = /\bElectron\//.test(navigator.userAgent);
+
 @Component({
   selector: 'app-root',
-  imports: [Icon, Resizable, SlipSheetDialog, InsertPagesDialog, PageLabelsDialog, RotatePagesDialog, PitchDialog, OcrPanel, ColumnsDialog, FilterBuilder, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
+  imports: [Icon, Resizable, SlipSheetDialog, InsertPagesDialog, PageLabelsDialog, RotatePagesDialog, ExtractPagesDialog, PitchDialog, SaveChangesDialog, OcrPanel, ColumnsDialog, FilterBuilder, EstimateView, LayoutsPanel, PlanView, PropertiesDialog, SidePanel, Ribbon, ScaleDialog, StatusBar, TakeoffTree, TemplatesView, Thumbnails],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     class: 'app',
     '(document:keydown)': 'onKey($event)',
     '(dragover)': '$event.preventDefault()',
     '(drop)': 'onDrop($event)',
+    '(window:beforeunload)': 'onBeforeUnload($event)',
   },
   template: `
     @let s = store.watch();
@@ -67,8 +85,25 @@ import { PitchDialog } from './components/pitch-dialog/pitch-dialog';
       <!-- Title bar: file name, pages, zoom and panels -->
       <header class="titlebar">
         <button class="icon-button" title="Sidebar" (click)="showSidebar.set(!showSidebar())"><app-icon class="icon" name="left_panel_open" /></button>
-        <span class="title">{{ s.fileName || 'CadrafterPro' }}</span>
-        <span class="spacer"></span>
+        @if (s.tabs.length) {
+          <!-- One tab per open document -->
+          <div class="doc-tabs" role="tablist">
+            @for (t of s.tabs; track t.id) {
+              <div class="doc-tab" role="tab" [class.active]="t.active" [attr.aria-selected]="t.active" [title]="t.name"
+                   (click)="s.switchTab(t.id)" (auxclick)="$event.button === 1 && s.requestCloseTab(t.id)">
+                <span class="doc-tab-name">{{ t.name }}</span>
+                @if (t.edited) { <span class="doc-tab-dot" title="Edited"></span> }
+                <button class="doc-tab-close" title="Close" (click)="$event.stopPropagation(); s.requestCloseTab(t.id)">
+                  <app-icon class="icon small" name="close" />
+                </button>
+              </div>
+            }
+            <button class="icon-button doc-tab-add" title="Open File…" (click)="openFile()"><app-icon class="icon small" name="add" /></button>
+          </div>
+        } @else {
+          <span class="title">CadrafterPro</span>
+          <span class="spacer"></span>
+        }
         <button class="icon-button" title="Previous Page" (click)="s.previousPage()"><app-icon class="icon" name="chevron_left" /></button>
         <button class="icon-button" title="Next Page" (click)="s.nextPage()"><app-icon class="icon" name="chevron_right" /></button>
         <button class="icon-button" title="Zoom Out" (click)="s.zoomOut()"><app-icon class="icon" name="zoom_out" /></button>
@@ -82,12 +117,28 @@ import { PitchDialog } from './components/pitch-dialog/pitch-dialog';
 
       <!-- Center: the plan (one or two panes), or on top of it the estimate or the templates -->
       <div class="center">
-        <div class="plan-area" [class.vertical]="s.splitMode === 'vertical'" [class.horizontal]="s.splitMode === 'horizontal'">
+        <div class="plan-area" #planArea [class.vertical]="s.splitMode === 'vertical'" [class.horizontal]="s.splitMode === 'horizontal'">
           @for (pane of panes(); track pane) {
-            <div class="pane" [class.active-pane]="s.splitMode !== 'single' && s.activePane === pane">
+            <!-- Bar between the two views: drag to give one more room, double click = half and half -->
+            @if (pane === 1) {
+              <div class="pane-splitter" title="Drag to resize the views (double click: half and half)"
+                   (mousedown)="startSplit($event, planArea)" (dblclick)="setSplit(0.5)"></div>
+            }
+            <div class="pane" [class.active-pane]="s.splitMode !== 'single' && s.activePane === pane"
+                 [style.flex]="s.splitMode !== 'single' && pane === 0 ? '0 0 ' + splitRatio() * 100 + '%' : null">
               @if (s.splitMode !== 'single') {
                 <div class="pane-bar" (mousedown)="s.activate(pane)">
-                  <span class="secondary small">{{ s.pageName(s.pageIndexes[pane]) }}</span>
+                  @let paneDoc = s.docView(pane);
+                  @if (s.tabs.length > 1) {
+                    <!-- Document shown in this view -->
+                    <select class="pane-doc" title="Document in this view" (mousedown)="$event.stopPropagation()"
+                            (change)="s.setPaneDoc(pane, $any($event.target).value)">
+                      @for (t of s.tabs; track t.id) {
+                        <option [value]="t.id" [selected]="t.id === s.paneDocId(pane)">{{ t.name }}</option>
+                      }
+                    </select>
+                  }
+                  <span class="secondary small">{{ paneDoc.pageName(paneDoc.pageIndexes[pane]) }}</span>
                   <span class="spacer"></span>
                   <button class="icon-button" title="Close This View" (click)="s.closePane(pane)"><app-icon class="icon small" name="close" /></button>
                 </div>
@@ -138,10 +189,13 @@ import { PitchDialog } from './components/pitch-dialog/pitch-dialog';
       <app-insert-pages-dialog />
     }
     @if (s.batchRotateOpen) { <app-rotate-pages-dialog /> }
+    @if (s.extractOpen) { <app-extract-pages-dialog /> }
     @if (s.pitchOpen) { <app-pitch-dialog /> }
     @if (s.columnsOpen) {
       <app-columns-dialog />
     }
+    <!-- Closing a document with changes not saved: Save / Don't Save / Cancel -->
+    @if (s.closePrompt) { <app-save-changes-dialog /> }
   `,
 })
 export class App {
@@ -155,6 +209,47 @@ export class App {
   readonly sidebarFilter = signal('');               // search box above the Elements / Pages list
 
   constructor() {
+    // Desktop app: the window's X asks the page first (electron/main.cjs calls this before closing).
+    // It answers true when the window can close now; otherwise it shows Save / Don't Save / Cancel
+    // for each document with changes and closes the window itself when every one is answered.
+    (window as unknown as { cadrafterRequestClose?: () => boolean }).cadrafterRequestClose = () => {
+      if (!this.store.hasUnsavedChanges) return true;
+      void this.store.requestCloseWindow().then(done => { if (done) window.close(); });
+      return false;
+    };
+  }
+
+  // In a browser tab (not the desktop app) the browser's own "Leave site?" question protects the changes
+  onBeforeUnload(e: BeforeUnloadEvent): void {
+    if (IS_DESKTOP || !this.store.hasUnsavedChanges) return;
+    e.preventDefault();
+    e.returnValue = '';
+  }
+
+  // Share of the first view when the plan is split (remembered on this computer)
+  readonly splitRatio = signal(readSplit());
+
+  setSplit(ratio: number): void {
+    const r = Math.min(0.85, Math.max(0.15, ratio));
+    this.splitRatio.set(r);
+    try { localStorage.setItem(SPLIT_KEY, String(r)); } catch { /* storage blocked */ }
+  }
+
+  startSplit(e: MouseEvent, area: HTMLElement): void {
+    e.preventDefault();
+    const vertical = this.store.splitMode === 'vertical';
+    const move = (ev: MouseEvent) => {
+      const r = area.getBoundingClientRect();
+      this.setSplit(vertical ? (ev.clientX - r.left) / r.width : (ev.clientY - r.top) / r.height);
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      document.body.classList.remove('resizing-split');
+    };
+    document.body.classList.add('resizing-split');
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
   }
 
   panes(): number[] {
@@ -164,52 +259,44 @@ export class App {
   // Open File: with the File System Access API (Chrome, Edge) Save can write over the same file;
   // other browsers use a normal file picker and Save downloads a copy
   async openFile(): Promise<void> {
-    const picker = (window as unknown as { showOpenFilePicker?: (o: object) => Promise<FileSystemFileHandle[]> })
-      .showOpenFilePicker;
-    if (!picker) {
-      this.pickWithInput();
-      return;
-    }
-    try {
-      const [handle] = await picker({ types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }] });
-      const file = await handle.getFile();
+    // Several files can be picked: each one opens in its own tab. The dialog starts in the last folder used.
+    for (const { file, handle } of await pickPdfFiles(true)) {
       await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name, handle);
-    } catch {
-      // cancelled
     }
-  }
-
-  // Safari and Firefox: a hidden file input made on the fly
-  private pickWithInput(): void {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/pdf,.pdf';
-    input.addEventListener('change', async () => {
-      const file = input.files?.[0];
-      if (file) await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name, null);
-    });
-    input.click();
   }
 
   // Drop a PDF on the window. The file and its handle are read before any await:
   // the dropped items stop working as soon as the event ends.
   async onDrop(event: DragEvent): Promise<void> {
     event.preventDefault();
-    const item = [...(event.dataTransfer?.items ?? [])].find(i => i.kind === 'file');
-    if (!item) return;
-    const file = item.getAsFile();
-    const withHandle = item as DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> };
-    const pendingHandle = withHandle.getAsFileSystemHandle?.().catch(() => null) ?? Promise.resolve(null);
-    if (!file || !file.name.toLowerCase().endsWith('.pdf')) return;
-    const handle = await pendingHandle;
-    await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name,
-      handle && handle.kind === 'file' ? handle as FileSystemFileHandle : null);
+    // Every dropped PDF opens in its own tab
+    const dropped = [...(event.dataTransfer?.items ?? [])].filter(i => i.kind === 'file').map(item => {
+      const withHandle = item as DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> };
+      return { file: item.getAsFile(), handle: withHandle.getAsFileSystemHandle?.().catch(() => null) ?? Promise.resolve(null) };
+    });
+    for (const { file, handle: pendingHandle } of dropped) {
+      if (!file || !file.name.toLowerCase().endsWith('.pdf')) continue;
+      const handle = await pendingHandle;
+      await this.store.open(new Uint8Array(await file.arrayBuffer()), file.name,
+        handle && handle.kind === 'file' ? handle as FileSystemFileHandle : null);
+    }
   }
 
   // ⌘O opens a drawing, ⌘S saves, ⇧⌘S saves a copy, ⌘Z undoes, ⇧⌘Z / Ctrl+Y redoes
   onKey(e: KeyboardEvent): void {
     if (!(e.metaKey || e.ctrlKey)) return;
     const key = e.key.toLowerCase();
+    // Ctrl+Tab / Ctrl+Shift+Tab: next / previous document; Ctrl+W closes it (in the desktop app)
+    if (key === 'tab' && e.ctrlKey) {
+      e.preventDefault();
+      this.store.nextTab(e.shiftKey ? -1 : 1);
+      return;
+    }
+    if (key === 'w' && this.store.hasDocument) {
+      e.preventDefault();
+      this.store.closeDocument();
+      return;
+    }
     // While typing in a text field, Undo belongs to the field
     const target = e.target as HTMLElement | null;
     const textInput = target instanceof HTMLInputElement && /^(text|search|number|email|url|tel|password)$/.test(target.type);

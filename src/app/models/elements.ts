@@ -1,4 +1,4 @@
-import type { PDFRef } from 'pdf-lib';
+import type { PDFDocument, PDFRef } from 'pdf-lib';
 import {
   COLORS, LengthUnit, LineStyle, Pt, Rect, TakeoffKind, boundsOf, uid,
 } from './takeoff';
@@ -14,6 +14,7 @@ export class Measurement {
   readonly id = uid();
   readonly isMeasurement = true;
   points: Pt[] = [];                       // in page coordinates (PDF points, y up)
+  cutouts: Pt[][] = [];                    // holes of an area (Cut Out tool), subtracted from it
   name = '';                               // item name (Revu "Subject")
   contents = '';                           // quantity text ("12.50 ft")
   visible = true;
@@ -52,7 +53,9 @@ export class Measurement {
   }
 
   move(dx: number, dy: number): void {
-    this.points = this.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
+    const shift = (p: Pt) => ({ x: p.x + dx, y: p.y + dy });
+    this.points = this.points.map(shift);
+    if (this.cutouts.length) this.cutouts = this.cutouts.map(hole => hole.map(shift));
   }
 
   // MARK: - Caption (text with the measurement)
@@ -99,6 +102,7 @@ export class Markup {
   readonly isMeasurement = false;
   ref: PDFRef | null = null;               // its object in the opened file (null = new copy)
   template: Markup | null = null;          // a copy made by "continue" is cloned from this one
+  templateLib: PDFDocument | null = null;  // file the template lives in, when it is another one (pasted from another document)
   dirty = false;                           // changed in the app: rewrite it when saving
 
   subtype = 'Annotation';                  // "Polygon", "PolyLine", "Square", "Ink"...
@@ -113,6 +117,8 @@ export class Markup {
   dashed = false;
   rect: Rect = { x: 0, y: 0, w: 0, h: 0 }; // /Rect
   vertices: Pt[] | null = null;            // /Vertices (Polygon, PolyLine)
+  cutouts: Pt[][] = [];                    // holes of a Revu area (/CPCutouts, Cut Out tool)
+  redrawAppearance = false;                // its /AP is drawn again on save (new holes or vertices)
   line: Pt[] | null = null;                // /L (Line)
   inkList: Pt[][] | null = null;           // /InkList (Ink: Revu Pen and Highlight)
   multiply = false;                        // /BM /Multiply (Revu Highlight)
@@ -240,6 +246,7 @@ export class Markup {
     const shift = (p: Pt) => ({ x: p.x + dx, y: p.y + dy });
     this.rect = { ...this.rect, x: this.rect.x + dx, y: this.rect.y + dy };
     if (this.vertices) this.vertices = this.vertices.map(shift);
+    if (this.cutouts.length) this.cutouts = this.cutouts.map(hole => hole.map(shift));
     if (this.line) this.line = this.line.map(shift);
     if (this.inkList) this.inkList = this.inkList.map(path => path.map(shift));
     if (this.callout) this.callout = this.callout.map(shift);
@@ -257,6 +264,8 @@ export class Markup {
     const dy = center.y - (this.rect.y + this.rect.h / 2);
     m.rect = { ...this.rect };
     m.vertices = this.vertices && this.vertices.map(p => ({ ...p }));
+    m.cutouts = this.cutouts.map(h => h.map(p => ({ ...p })));
+    m.redrawAppearance = this.cutouts.length > 0;
     m.line = this.line && this.line.map(p => ({ ...p }));
     m.inkList = this.inkList && this.inkList.map(path => path.map(p => ({ ...p })));
     m.callout = this.callout && this.callout.map(p => ({ ...p }));

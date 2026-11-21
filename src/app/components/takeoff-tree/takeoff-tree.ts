@@ -9,11 +9,12 @@ import { Icon } from '../icon/icon';
 // only the elements whose name matches, already open.
 // Click selects an element; Shift + click selects every row from the first one clicked to this one,
 // Ctrl / ⌘ + click adds or removes one, Ctrl + Shift + click adds a range to what is selected.
+// Up / Down arrows (with the tree focused) go to the previous / next page in the list.
 @Component({
   selector: 'app-takeoff-tree',
   imports: [Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { class: 'tree' },
+  host: { class: 'tree', tabindex: '0', '(keydown)': 'onKey($event)' },
   template: `
     @let s = store.watch();
     @if (!s.hasDocument) {
@@ -27,7 +28,8 @@ import { Icon } from '../icon/icon';
       @let isCurrent = index === s.currentPageIndex;
       @if (!searching() || pageHit || takeoffs.length || groups.length) {
       <!-- Page row: double click or right click to rename it. The page shown in the plan is highlighted -->
-      <div class="tree-row page-row" [class.current]="isCurrent" (click)="s.goTo(index)"
+      <div class="tree-row page-row" [attr.data-page]="index" [class.current]="isCurrent"
+           [class.selected]="!isCurrent && s.selectedPages.includes(index)" (click)="s.clickPage(index, $event)"
            (dblclick)="startEdit('page-' + index, s.pageNames.get(index) ?? '')"
            (contextmenu)="$event.preventDefault(); startEdit('page-' + index, s.pageNames.get(index) ?? '')">
         <button class="disclosure" (click)="$event.stopPropagation(); toggle('page-' + index)">
@@ -163,6 +165,22 @@ export class TakeoffTree {
   readonly editText = signal('');
 
   readonly filter = input('');
+
+  // Up / Down: previous / next page among the pages the tree shows (the search box may hide some)
+  onKey(e: KeyboardEvent): void {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    if ((e.target as HTMLElement).closest('input, textarea, select')) return;
+    const s = this.store;
+    if (!s.hasDocument) return;
+    e.preventDefault();
+    const rows = Array.from((e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('.page-row[data-page]'));
+    const shown = rows.map(r => Number(r.dataset['page']));
+    const at = shown.indexOf(s.currentPageIndex);
+    const next = at < 0 ? shown[0] : shown[at + (e.key === 'ArrowDown' ? 1 : -1)];
+    if (next === undefined) return;
+    s.goTo(next);
+    rows[shown.indexOf(next)]?.scrollIntoView({ block: 'nearest' });
+  }
 
   isOpen(key: string): boolean { return this.open().has(key); }
 
