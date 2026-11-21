@@ -1390,7 +1390,12 @@ export class DrawingStore {
       this.measurements.filter(m => m.itemId === id).forEach(m => m.fillColor = value);
     }
     this.selection.forEach(el => {
-      if (el instanceof Markup && el.fillColor !== null) { el.fillColor = value; el.dirty = true; }
+      if (el instanceof Markup && el.fillColor !== null) {
+        el.fillColor = value;
+        el.dirty = true;
+        // Its picture in the PDF is drawn again (Revu measurements keep theirs)
+        if (!el.isRevuMeasurement) el.redrawAppearance = true;
+      }
     });
     this.touch();
   }

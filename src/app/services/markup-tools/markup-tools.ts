@@ -32,6 +32,7 @@ export const MARKUP_TOOLS: MarkupToolInfo[] = [
 export interface MarkupStyle {
   color: string;
   fillColor: string | null;
+  fillOpacity: number;                     // fill only (0 to 1); the line keeps its own opacity
   lineWidth: number;
   opacity: number;
   fontSize: number;
@@ -39,10 +40,14 @@ export interface MarkupStyle {
 }
 
 const RED = COLORS.red;
+// Fill opacity of see-through fills (clouds and shapes): the plan stays readable underneath
+export const SHAPE_FILL_OPACITY = 0.2;
 
 function defaultStyle(kind: MarkupToolKind): MarkupStyle {
-  const base: MarkupStyle = { color: RED, fillColor: null, lineWidth: 1, opacity: 1, fontSize: 12, textColor: RED };
+  const base: MarkupStyle = { color: RED, fillColor: null, fillOpacity: 1, lineWidth: 1, opacity: 1, fontSize: 12, textColor: RED };
   switch (kind) {
+    // Revision cloud: see-through fill in the line color, so the area stands out and the plan stays readable
+    case 'cloud': return { ...base, fillColor: RED, fillOpacity: SHAPE_FILL_OPACITY };
     case 'text': return { ...base, lineWidth: 0 };
     case 'pen': return { ...base, lineWidth: 1.5 };
     case 'highlight': return { ...base, color: '#FFFF00', lineWidth: 12 };
@@ -148,7 +153,7 @@ export class MarkupTools {
     m.author = 'CadrafterPro';
     m.color = st.color;
     m.fillColor = st.fillColor;
-    m.fillOpacity = st.fillColor ? 1 : null;
+    m.fillOpacity = st.fillColor ? st.fillOpacity : null;
     m.lineWidth = st.lineWidth;
     m.opacity = st.opacity;
     const a = path[0];
@@ -323,7 +328,10 @@ export class MarkupTools {
 
   // Changes the default look of the active tool
   setStyle(kind: MarkupToolKind, change: Partial<MarkupStyle>): void {
-    Object.assign(this.style(kind), change);
+    const st = this.style(kind);
+    // A fill in the line color (the cloud's) follows the new line color
+    if (change.color && change.fillColor === undefined && st.fillColor === st.color) change = { ...change, fillColor: change.color };
+    Object.assign(st, change);
     this.styleVersion.update(v => v + 1);
     this.saveStyles();
   }
@@ -333,7 +341,14 @@ export class MarkupTools {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as Record<string, Partial<MarkupStyle>>;
       for (const [kind, style] of Object.entries(saved)) {
         const current = this.styles.get(kind as MarkupToolKind);
-        if (current) Object.assign(current, style);
+        if (!current) continue;
+        // Saved before tools had a fill opacity: the cloud takes its new default fill,
+        // other tools keep the opaque fill they had
+        if (!('fillOpacity' in style)) {
+          if (kind === 'cloud') delete style.fillColor;
+          else style.fillOpacity = 1;
+        }
+        Object.assign(current, style);
       }
     } catch {
       // private window or blocked storage: keep the defaults

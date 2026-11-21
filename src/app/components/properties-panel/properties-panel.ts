@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { Markup } from '../../models/elements';
 import { AREA_UNITS, COLORS, LENGTH_UNITS, LINE_STYLES, LengthUnit, LineStyle, areaUnitName, lengthUnitName } from '../../models/takeoff';
 import { DrawingStore } from '../../services/drawing.store/drawing.store';
-import { MarkupStyle, MarkupTools } from '../../services/markup-tools/markup-tools';
+import { MarkupStyle, MarkupTools, SHAPE_FILL_OPACITY } from '../../services/markup-tools/markup-tools';
 
 // Settings panel of the right side bar: takeoff value, selection, appearance, caption,
 // markup text and arrows, the look of the active markup tool, and the document
@@ -40,11 +40,20 @@ import { MarkupStyle, MarkupTools } from '../../services/markup-tools/markup-too
           <div class="field">Fill Color
             <div class="slider-row">
               <label class="check-field"><input type="checkbox" [checked]="st.fillColor !== null"
-                     (change)="setTool({ fillColor: checked($event) ? '#FFFFFF' : null })" /> Fill</label>
+                     (change)="setToolFill(checked($event))" /> Fill</label>
               <input type="color" [value]="st.fillColor ?? '#FFFFFF'" [disabled]="st.fillColor === null"
                      (input)="setTool({ fillColor: value($event) })" />
             </div>
           </div>
+          @if (st.fillColor !== null) {
+            <div class="field">Fill Opacity
+              <div class="slider-row">
+                <input type="range" min="0.05" max="1" step="0.05" [value]="st.fillOpacity"
+                       (input)="setTool({ fillOpacity: number($event) })" />
+                <span class="mono">{{ percent(st.fillOpacity) }} %</span>
+              </div>
+            </div>
+          }
         }
         <div class="field">Line Width
           <div class="slider-row">
@@ -204,6 +213,13 @@ import { MarkupStyle, MarkupTools } from '../../services/markup-tools/markup-too
           @if (first.fillColor === null && hasFillShape(marks)) {
             <button (click)="setFill(true)">Add Fill</button>
           } @else if (first.fillColor !== null && hasFillShape(marks)) {
+            <div class="field">Fill Opacity
+              <div class="slider-row">
+                <input type="range" min="0.05" max="1" step="0.05" [value]="first.fillOpacity ?? 1"
+                       (input)="setFillOpacity(number($event))" />
+                <span class="mono">{{ percent(first.fillOpacity ?? 1) }} %</span>
+              </div>
+            </div>
             <button (click)="setFill(false)">Remove Fill</button>
           }
           @if (first.isTextBox) {
@@ -338,11 +354,34 @@ export class PropertiesPanel {
     this.markups.edit(key, m => { m[key] = v; });
   }
 
+  // Fill checkbox of the active tool: text boxes get an opaque white background,
+  // shapes and clouds a see-through fill in their line color
+  setToolFill(on: boolean): void {
+    const tool = this.markups.tool();
+    if (!tool) return;
+    const text = tool === 'text' || tool === 'callout';
+    const st = this.markups.style(tool);
+    this.setTool(on
+      ? { fillColor: text ? '#FFFFFF' : st.color, fillOpacity: text ? 1 : SHAPE_FILL_OPACITY }
+      : { fillColor: null });
+  }
+
+  // Add Fill / Remove Fill of the selected markups (same defaults as the tool's Fill checkbox)
   setFill(on: boolean): void {
     this.markups.edit('fill', m => {
       if (!this.hasFillShape([m])) return;
-      m.fillColor = on ? '#FFFFFF' : null;
-      m.fillOpacity = on ? 1 : null;
+      m.fillColor = on ? (m.isTextBox ? '#FFFFFF' : m.color ?? COLORS.red) : null;
+      m.fillOpacity = on ? (m.isTextBox ? 1 : SHAPE_FILL_OPACITY) : null;
+      m.redrawAppearance = true;
+    });
+  }
+
+  // Fill opacity of the selected markups (one Undo step while the slider moves)
+  setFillOpacity(v: number): void {
+    this.markups.edit('fillOpacity', m => {
+      if (!this.hasFillShape([m]) || m.fillColor === null) return;
+      m.fillOpacity = v;
+      m.redrawAppearance = true;
     });
   }
 

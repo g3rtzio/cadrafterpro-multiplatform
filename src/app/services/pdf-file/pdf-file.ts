@@ -116,6 +116,7 @@ function readMarkup(dict: PDFDict, pageIndex: number): Markup | null {
   m.fillColor = colorOf(dict, 'IC');
   m.opacity = numberOf(dict, 'CA') ?? 1;
   m.fillOpacity = numberOf(dict, 'FillOpacity');
+  readFillFromAppearance(dict, m);
   const rect = numbersOf(dict, 'Rect');
   if (rect && rect.length === 4) {
     m.rect = {
@@ -146,6 +147,68 @@ function readMarkup(dict: PDFDict, pageIndex: number): Markup | null {
   readMarkupTools(dict, m);
   return m;
 }
+// Fill of a shape (cloud, polygon, rectangle, ellipse) taken from its appearance when the dictionary
+// doesn't say it: some apps paint the fill only in /AP (no /IC), and Revu keeps the fill opacity
+// in the appearance's graphics state (/ca) instead of /FillOpacity.
+function readFillFromAppearance(dict: PDFDict, m: Markup): void {
+  if (!['Polygon', 'Square', 'Circle'].includes(m.subtype)) return;
+  if (m.fillColor && m.fillOpacity !== null) return;
+  const fill = appearanceFill(dict);
+  if (!fill) return;
+  m.fillColor ??= fill.color;
+  // /ca of the appearance already includes the markup's /CA, which the plan applies on top
+  if (m.fillOpacity === null && fill.opacity < 1) m.fillOpacity = Math.min(fill.opacity / Math.max(m.opacity, 0.01), 1);
+}
+
+// First filled path of the normal appearance: its fill color and the /ca of its graphics state
+function appearanceFill(dict: PDFDict): { color: string; opacity: number } | null {
+  const ap = dict.lookupMaybe(PDFName.of('AP'), PDFDict);
+  const normal = ap?.lookup(PDFName.of('N'));
+  if (!(normal instanceof PDFRawStream)) return null;
+  let text: string;
+  try {
+    text = new TextDecoder('latin1').decode(decodePDFRawStream(normal).decode());
+  } catch {
+    return null;
+  }
+  const states = normal.dict.lookupMaybe(PDFName.of('Resources'), PDFDict)?.lookupMaybe(PDFName.of('ExtGState'), PDFDict);
+  const alphaOf = (name: string) => {
+    const gs = states?.lookupMaybe(PDFName.of(name), PDFDict);
+    return gs ? numberOf(gs, 'ca') : undefined;
+  };
+  // Walks the operators with a small graphics state stack (q/Q): fill color, its alpha, and the first fill
+  const stack: { color: number[] | null; alpha: number }[] = [];
+  let color: number[] | null = null;
+  let alpha = 1;
+  const operands: string[] = [];
+  for (const token of text.match(/\/[^\s/\[\]()<>{}%]+|[-+]?\d*\.?\d+|[A-Za-z*']+|\S/g) ?? []) {
+    if (/^[-+]?\d*\.?\d+$/.test(token) || token.startsWith('/')) { operands.push(token); continue; }
+    const nums = operands.filter(o => !o.startsWith('/')).map(Number);
+    switch (token) {
+      case 'q': stack.push({ color, alpha }); break;
+      case 'Q': ({ color, alpha } = stack.pop() ?? { color, alpha }); break;
+      case 'g': if (nums.length >= 1) color = [nums.at(-1)!, nums.at(-1)!, nums.at(-1)!]; break;
+      case 'rg': if (nums.length >= 3) color = nums.slice(-3); break;
+      case 'k':
+        if (nums.length >= 4) {
+          const [c, mg, y, k] = nums.slice(-4);
+          color = [(1 - c) * (1 - k), (1 - mg) * (1 - k), (1 - y) * (1 - k)];
+        }
+        break;
+      case 'gs': {
+        const name = operands.at(-1);
+        const a = name ? alphaOf(name.slice(1)) : undefined;
+        if (a !== undefined && a !== null) alpha = a;
+        break;
+      }
+      case 'f': case 'F': case 'f*': case 'b': case 'b*': case 'B': case 'B*':
+        return color ? { color: hex(color), opacity: alpha } : null;
+    }
+    operands.length = 0;
+  }
+  return null;
+}
+
 // Fields of the Markup tools: cloud, callout, line endings, text box font and color
 function readMarkupTools(dict: PDFDict, m: Markup): void {
   m.appMade = dict.lookup(PDFName.of('CadrafterProMarkup')) !== undefined;
@@ -422,6 +485,9 @@ function writeMarkup(lib: PDFDocument, dict: PDFDict, m: Markup): void {
   dict.set(PDFName.of('Contents'), PDFHexString.fromText(m.contents));
   if (m.color) dict.set(PDFName.of('C'), lib.context.obj(rgb(m.color)));
   if (m.fillColor) dict.set(PDFName.of('IC'), lib.context.obj(rgb(m.fillColor)));
+  else dict.delete(PDFName.of('IC'));                       // Remove Fill
+  if (m.fillColor && m.fillOpacity !== null) dict.set(PDFName.of('FillOpacity'), PDFNumber.of(m.fillOpacity));
+  else if (!m.fillColor) dict.delete(PDFName.of('FillOpacity'));
   const flags = numberOf(dict, 'F') ?? 4;
   dict.set(PDFName.of('F'), PDFNumber.of(m.visible ? flags & ~2 : flags | 2));
   const bs = dict.lookupMaybe(PDFName.of('BS'), PDFDict);
